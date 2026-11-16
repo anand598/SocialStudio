@@ -70,7 +70,7 @@ npm ci
 npm run dev
 ```
 
-The backend reads root `.env` from either root or `backend/`. The frontend reads `NEXT_PUBLIC_API_URL`; put overrides in `frontend/.env.local` or its launch environment, since Next.js does not read the root `.env`. Default API is http://localhost:8000; CORS allows only `FRONTEND_ORIGIN`. API docs: http://localhost:8000/docs.
+The backend reads root `.env` from either root or `backend/`. The frontend defaults to same-origin `/api` requests, proxied by Next.js to `API_PROXY_URL` (default `http://127.0.0.1:8000`). Put frontend overrides in `frontend/.env.local` or its launch environment; Next.js does not read the root `.env`. Set `NEXT_PUBLIC_API_URL` only when deliberately using a separate browser-facing API. Direct API requests use CORS restricted to `FRONTEND_ORIGIN`. API docs: http://localhost:8000/docs.
 
 ### Full local container configuration
 
@@ -78,7 +78,7 @@ The backend reads root `.env` from either root or `backend/`. The frontend reads
 docker compose --env-file .env -f infrastructure/docker-compose.yml -f infrastructure/docker-compose.app.yml up --build
 ```
 
-The migration service must finish before API/worker startup. Host Ollama is accessed at `http://host.docker.internal:11434` on Docker Desktop. Ensure the host service permits that connection; it has not been tested here. To run explicit demo mode in containers, set `GENERATION_MODE=demo` in `.env` before startup. Containerized frontend API URLs are build-time arguments and must be reachable by the browser.
+The migration service must finish before API/worker startup. Host Ollama is accessed at `http://host.docker.internal:11434` on Docker Desktop. Ensure the host service permits that connection; it has not been tested here. To run explicit demo mode in containers, set `GENERATION_MODE=demo` in `.env` before startup. The container frontend proxies to `http://api:8000` by default. Proxy targets are build-time arguments for standalone production output; rebuild after changing them. Explicit `NEXT_PUBLIC_API_URL` overrides must be browser-reachable.
 
 Containers run application code as non-root users. Database, Redis, and app ports bind to loopback for local use. The Docker configuration is supplied but **not build/run verified**, because Docker is missing in the current environment.
 

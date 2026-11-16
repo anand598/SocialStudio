@@ -57,3 +57,7 @@ README, architecture, deployment preparation, and a four-minute walkthrough scri
 5. Local media needs shared storage on one host. Add S3-compatible storage/signed URLs before multi-host scaling. Failed/retried artifacts currently have no automatic retention cleanup.
 6. Review AI claims manually; schema validation and prompts cannot guarantee factual accuracy. Non-Latin font coverage depends on the configured font. No copyright music is bundled.
 7. Only still image → Instagram Reel is implemented. Source video, URL input, history UI, more formats, and generative image/video synthesis are pending. Existing jobs remain accessible through their saved URL, not an account history.
+
+## Local connection fix — 2026-11-16
+
+The browser-facing UI now uses same-origin `/api` URLs, with Next.js proxying to the configured backend. The demo launcher sets the proxy to its chosen API port; Docker builds target the `api` service. This removes separate browser-port/CORS dependencies for the normal workflow. Five frontend tests, TypeScript, and the production build pass. A full separate-worker smoke test through `http://localhost:3000` verified configuration, multipart upload, status polling, MP4 download, and caption retrieval.

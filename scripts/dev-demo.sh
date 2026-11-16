@@ -17,7 +17,8 @@ export CELERY_BROKER_URL=filesystem://
 demo_api_port="${DEMO_API_PORT:-8000}"
 demo_ui_port="${DEMO_UI_PORT:-3000}"
 export FRONTEND_ORIGIN="http://localhost:$demo_ui_port"
-export NEXT_PUBLIC_API_URL="http://localhost:$demo_api_port"
+export NEXT_PUBLIC_API_URL=""
+export API_PROXY_URL="http://127.0.0.1:$demo_api_port"
 export NEXT_TELEMETRY_DISABLED=1
 cd "$repo_dir/backend"
 .venv/bin/alembic upgrade head
