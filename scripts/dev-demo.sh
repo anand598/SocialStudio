@@ -32,6 +32,12 @@ trap cleanup EXIT
 trap 'exit 130' INT TERM
 echo "Demo mode: http://localhost:$demo_ui_port — real rendering; deterministic copy, no AI analysis."
 echo "Logs: $runtime_dir/logs. Ctrl-C stops these processes."
-while kill -0 "$api_pid" "$worker_pid" "$ui_pid" 2>/dev/null; do sleep 2; done
-echo "A service stopped. Inspect the logs above." >&2
-exit 1
+while true; do
+  for service_pid in "$api_pid" "$worker_pid" "$ui_pid"; do
+    if ! kill -0 "$service_pid" 2>/dev/null; then
+      echo "A service stopped. Inspect the logs above." >&2
+      exit 1
+    fi
+  done
+  sleep 2
+done
