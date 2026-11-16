@@ -22,6 +22,9 @@ def test_real_render_download_and_idempotency(client, image_bytes, monkeypatch):
     assert response.status_code == 200
     assert response.headers["content-type"] == "video/mp4"
     assert len(response.content) > 1000
+    preview = client.get(f"/api/v1/generations/{job_id}/preview", headers={"Range": "bytes=0-99"})
+    assert preview.status_code == 206
+    assert len(preview.content) == 100
     from app.services.storage.local import job_directory
     output = next(job_directory(job_id).glob("output-*.mp4"))
     inspect_video(output, 9)
