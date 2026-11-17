@@ -1,128 +1,208 @@
-import json
+"""Template rendering for every registered output format.
+
+Three paths, all driven by the format registry's exact dimensions:
+  * image output          -> one poster (JPEG) in the promo design, dimension-verified;
+  * video from a still    -> promo video (see promo.py): shot plan, motion, animated captions,
+                             cross-fades; frames streamed to FFmpeg as silent H.264;
+  * video from a video    -> source reframed onto the target aspect over a blurred fill,
+                             trimmed to the format limit, with hook/CTA/brand overlays; audio kept.
+Every video is ffprobe-checked and fully decoded before it is published atomically.
+"""
 import os
+import re
 import shutil
-import subprocess
 from pathlib import Path
 from uuid import UUID
-from PIL import Image, ImageDraw, ImageFont, ImageOps
-from app.core.config import get_settings
-from app.core.platforms import INSTAGRAM_REEL
+from PIL import Image, ImageDraw
+from app.core.platforms import INSTAGRAM_REEL, OutputFormat
 from app.schemas.content import SocialContent
 from app.services.ai.provider import GenerationError
+from app.services.media.ffmpeg import (AUDIO_OUT, encode_frames, has_audio, music_filter, probe, require_tools, run,
+                                       video_stream)
+from app.services.media.promo import FPS, Promo, layout
+from app.services.media.typography import BOLD_FONTS, REGULAR_FONTS, fit_text, font, wrap_text  # noqa: F401
 from app.services.storage.local import job_directory
 
-
-def font(size: int):
-    configured = get_settings().font_path
-    candidates = [configured, "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                  "/System/Library/Fonts/Supplemental/Arial.ttf"]
-    for name in candidates:
-        if name and Path(name).is_file():
-            return ImageFont.truetype(name, size)
-    return ImageFont.load_default(size=size)
+INK = "#102f2b"
+# Opening title card for template videos, so the hook is the first thing viewers read.
+HOOK_SECONDS = 2
 
 
-def wrap_text(draw, text: str, face, width: int) -> list[str]:
-    # Break oversized words too, so arbitrary user CTA cannot escape the canvas.
-    lines, line = [], ""
-    for word in text.split():
-        candidate = f"{line} {word}".strip()
-        if draw.textlength(candidate, font=face) <= width:
-            line = candidate
-            continue
-        if line:
-            lines.append(line)
-        line = ""
-        for char in word:
-            if draw.textlength(line + char, font=face) > width:
-                lines.append(line)
-                line = char
-            else:
-                line += char
-    if line:
-        lines.append(line)
-    return lines or [""]
+def compose_frame(output: OutputFormat, source: str, text: str, brand: str, *, cta: str = "") -> Image.Image:
+    """Poster for image formats: photo-derived backdrop, product card, headline, brand, CTA."""
+    return Promo(output, source, [(text, 1)], brand=brand, cta=cta).poster()
 
 
-def scene_image(source: str, text: str, brand: str, index: int, count: int, destination: Path):
-    width, height = INSTAGRAM_REEL.width, INSTAGRAM_REEL.height
-    canvas = Image.new("RGB", (width, height), "#102f2b")
-    draw = ImageDraw.Draw(canvas)
-    brand_font = font(30)
-    for row, line in enumerate(wrap_text(draw, (brand or "PRODUCT SPOTLIGHT")[:80], brand_font, 908)[:2]):
-        draw.text((86, 136 + row * 40), line, font=brand_font, fill="#ccedcb")
-    with Image.open(source) as image:
-        image = ImageOps.contain(image.convert("RGB"), (908, 960))
-        x, y = (width - image.width) // 2, 340 + (960 - image.height) // 2
-        draw.rounded_rectangle((70, 320, width - 70, 1320), radius=30, fill="#f4f3ec")
-        canvas.paste(image, (x, y))
-    face = font(66)
-    lines = wrap_text(draw, text, face, 880)
-    if len(lines) > 4:
-        face = font(48)
-        lines = wrap_text(draw, text, face, 880)
-    for row, line in enumerate(lines[:5]):
-        draw.text((90, 1420 + row * 79), line, font=face, fill="#ffffff")
-    for i in range(count):
-        left = 90 + i * 80
-        draw.rounded_rectangle((left, 1800, left + 56, 1806), radius=3,
-                               fill="#ccedcb" if i == index else "#496661")
-    canvas.save(destination)
+def overlay_image(output: OutputFormat, text: str, position: str, *, accent: bool = False) -> Image.Image:
+    """Transparent full-frame overlay with a readable text box, for compositing onto source video."""
+    width, height = output.width, output.height
+    layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    margin = round(min(width, height) * 0.06)
+    box_width = width - margin * 2 if output.orientation != "landscape" else round(width * 0.6)
+    size = round(min(width, height) * (0.06 if position != "brand" else 0.03))
+    face, lines, line_height = fit_text(draw, text, box_width - margin, round(size * 1.2 * 3), size, bold=True)
+    text_width = max(draw.textlength(line, font=face) for line in lines)
+    pad = round(size * 0.6)
+    box_w, box_h = text_width + pad * 2, len(lines) * line_height + pad * 2
+    portrait = output.orientation == "portrait"
+    # Vertical feeds cover the top ~10% (tabs) and bottom ~20% (caption, username, music) with app UI.
+    if position == "brand":
+        left, top = margin, round(height * 0.1) if portrait else margin
+    else:
+        left = (width - box_w) // 2
+        top = round(height * (0.15 if portrait else 0.08)) if position == "top" \
+            else height - round(height * (0.22 if portrait else 0.1)) - box_h
+    fill = (204, 237, 203, 240) if accent else (16, 47, 43, 205)
+    draw.rounded_rectangle((left, top, left + box_w, top + box_h), radius=round(size * 0.5), fill=fill)
+    for row, line in enumerate(lines):
+        line_x = left + (box_w - draw.textlength(line, font=face)) / 2
+        draw.text((line_x, top + pad + row * line_height), line, font=face, fill=INK if accent else "#ffffff")
+    return layer
 
 
-def run(command: list[str]):
+def inspect_video(path: Path, expected_duration: float, output: OutputFormat = INSTAGRAM_REEL) -> dict:
     try:
-        subprocess.run(command, check=True, capture_output=True,
-                       timeout=get_settings().ffmpeg_timeout_seconds)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
-        raise GenerationError("RENDER_FAILED", "Video rendering failed or timed out. Check FFmpeg and retry.") from exc
-
-
-def inspect_video(path: Path, expected_duration: float) -> dict:
-    try:
-        result = subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)],
-                                check=True, capture_output=True, timeout=15)
-        metadata = json.loads(result.stdout)
-        stream = next(item for item in metadata["streams"] if item["codec_type"] == "video")
-        valid = (stream["width"] == INSTAGRAM_REEL.width and stream["height"] == INSTAGRAM_REEL.height
+        metadata = probe(path)
+        stream = video_stream(metadata)
+        valid = (stream["width"] == output.width and stream["height"] == output.height
                  and stream["codec_name"] == "h264" and stream["pix_fmt"] == "yuv420p"
                  and abs(float(metadata["format"]["duration"]) - expected_duration) < 0.5
                  and "mp4" in metadata["format"]["format_name"] and path.stat().st_size > 0)
         if not valid:
             raise ValueError("Invalid media metadata")
         return metadata
-    except (OSError, subprocess.SubprocessError, ValueError, KeyError, StopIteration) as exc:
+    except (OSError, ValueError, KeyError, StopIteration) as exc:
         raise GenerationError("INVALID_OUTPUT", "The rendered output did not pass media validation. Please retry.") from exc
 
 
-def render_video(job_id: UUID, source: str, content: SocialContent, brand: dict, run_token: UUID) -> tuple[Path, Path]:
-    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
-        raise GenerationError("FFMPEG_REQUIRED", "FFmpeg and ffprobe must be installed on the worker.")
+def publish_video(temporary: Path, directory: Path, run_token: UUID, duration: float, output: OutputFormat) -> Path:
+    inspect_video(temporary, duration, output)
+    # Decode every frame, not just the container metadata, before accepting the asset.
+    run(["ffmpeg", "-v", "error", "-xerror", "-threads", "2", "-i", str(temporary), "-f", "null", "-"])
+    final = directory / f"output-{run_token}.mp4"
+    os.replace(temporary, final)
+    return final
+
+
+def save_thumbnail(image: Image.Image, directory: Path, run_token: UUID) -> Path:
+    thumbnail = image.convert("RGB").copy()
+    thumbnail.thumbnail((540, 960))
+    path = directory / f"thumbnail-{run_token}.jpg"
+    thumbnail.save(path, quality=90)
+    return path
+
+
+def render_image(directory: Path, output: OutputFormat, source: str, content: SocialContent, brand: dict,
+                 run_token: UUID) -> tuple[Path, Path]:
+    poster = compose_frame(output, source, content.hook, brand.get("brand_name", ""), cta=content.call_to_action)
+    temporary = directory / f"output-{run_token}.partial.jpg"
+    poster.save(temporary, "JPEG", quality=92, optimize=True)
+    try:
+        with Image.open(temporary) as check:
+            if check.format != "JPEG" or check.size != (output.width, output.height):
+                raise ValueError("Invalid image output")
+    except (OSError, ValueError) as exc:
+        raise GenerationError("INVALID_OUTPUT", "The rendered image did not pass validation. Please retry.") from exc
+    final = directory / f"output-{run_token}.jpg"
+    os.replace(temporary, final)
+    return final, save_thumbnail(poster, directory, run_token)
+
+
+def slideshow_scenes(content: SocialContent) -> list[tuple[str, int]]:
+    """On-screen captions and durations: the hook opens unless the first scene already says it.
+
+    Models often split the hook across the opening scenes, so overlap in either direction counts.
+    """
+    scenes = [(scene.text, scene.duration_seconds) for scene in content.scenes]
+    def key(text: str) -> str:
+        return re.sub(r"[^a-z0-9]", "", text.lower())
+    hook, first = key(content.hook), key(scenes[0][0])
+    if hook and first and hook not in first and first not in hook:
+        scenes.insert(0, (content.hook, HOOK_SECONDS))
+    return scenes
+
+
+def render_slideshow(directory: Path, scratch: Path, output: OutputFormat, source: str, content: SocialContent,
+                     brand: dict, run_token: UUID, music: str | None = None) -> tuple[Path, Path]:
+    video = Promo(output, source, slideshow_scenes(content), brand=brand.get("brand_name", ""),
+                  cta=content.call_to_action)
+    temporary = directory / f"output-{run_token}.partial.mp4"
+    encode_frames(video.frames(), output.width, output.height, FPS, temporary, music=music, duration=video.duration)
+    # Cover image: the opening shot once its caption has landed.
+    thumbnail = save_thumbnail(video.frame(min(1.2, video.duration / 2)), directory, run_token)
+    return publish_video(temporary, directory, run_token, video.duration, output), thumbnail
+
+
+def render_from_video(directory: Path, scratch: Path, output: OutputFormat, source_video: str, content: SocialContent,
+                      brand: dict, run_token: UUID, music: str | None = None) -> tuple[Path, Path]:
+    try:
+        metadata = probe(Path(source_video))
+        duration = round(min(float(metadata["format"]["duration"]), output.max_video_seconds), 2)
+    except (ValueError, KeyError) as exc:
+        raise GenerationError("INVALID_SOURCE", "The source video could not be read. Upload it again.") from exc
+    width, height = output.width, output.height
+    hook_end = round(min(3.5, duration * 0.45), 2)
+    cta_start = round(max(duration - 3.5, duration * 0.55), 2)
+    overlay_image(output, content.hook, "top").save(scratch / "hook.png")
+    overlay_image(output, content.call_to_action, "bottom", accent=True).save(scratch / "cta.png")
+    brand_name = brand.get("brand_name", "")
+    inputs = ["-i", source_video]
+    for name in ["hook", "cta"] + (["brand"] if brand_name else []):
+        if name == "brand":
+            overlay_image(output, brand_name, "brand").save(scratch / "brand.png")
+        inputs += ["-loop", "1", "-framerate", "30", "-t", str(duration), "-i", str(scratch / f"{name}.png")]
+    # Fill the frame with a blurred, darkened copy and centre the uncropped source on top,
+    # so any source aspect becomes the platform aspect without distortion or losing the product.
+    graph = (f"[0:v]fps=30,split=2[bgsrc][fgsrc];"
+             f"[bgsrc]scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},"
+             f"boxblur=24:2,eq=brightness=-0.12[bg];"
+             f"[fgsrc]scale={width}:{height}:force_original_aspect_ratio=decrease[fg];"
+             f"[bg][fg]overlay=(W-w)/2:(H-h)/2[base];"
+             f"[base][1:v]overlay=0:0:enable='between(t,0,{hook_end})'[v1];"
+             f"[v1][2:v]overlay=0:0:enable='gte(t,{cta_start})'[v2];")
+    graph += "[v2][3:v]overlay=0:0,format=yuv420p[out]" if brand_name else "[v2]format=yuv420p[out]"
+    if music:
+        # Music sits quietly under the clip's own sound (or plays alone if the clip is silent).
+        index = len([arg for arg in inputs if arg == "-i"])
+        inputs += ["-i", music]
+        if has_audio(metadata):
+            graph += (f";[0:a]aresample=48000[src];[{index}:a]{music_filter(duration, loudness=-20)},volume=0.35[bgm];"
+                      f"[src][bgm]amix=inputs=2:duration=first:normalize=0[aout]")
+        else:
+            graph += f";[{index}:a]{music_filter(duration)}[aout]"
+        audio = ["-map", "[aout]", *AUDIO_OUT]
+    elif has_audio(metadata):
+        audio = ["-map", "0:a:0", "-c:a", "aac", "-b:a", "128k", "-ac", "2"]
+    else:
+        audio = ["-an"]
+    temporary = directory / f"output-{run_token}.partial.mp4"
+    run(["ffmpeg", "-y", "-v", "error", "-filter_threads", "2", *inputs, "-filter_complex", graph,
+         "-map", "[out]", *audio, "-t", str(duration), "-c:v", "libx264", "-threads", "2", "-preset", "veryfast",
+         "-crf", "23", "-movflags", "+faststart", str(temporary)])
+    final = publish_video(temporary, directory, run_token, duration, output)
+    still = scratch / "thumbnail.png"
+    run(["ffmpeg", "-y", "-v", "error", "-ss", str(min(1.0, hook_end / 2)), "-i", str(final), "-frames:v", "1", str(still)])
+    with Image.open(still) as frame:
+        return final, save_thumbnail(frame, directory, run_token)
+
+
+def render_output(job_id: UUID, output: OutputFormat, still: str, content: SocialContent, brand: dict,
+                  run_token: UUID, source_video: str | None = None, music: str | None = None) -> tuple[Path, Path]:
     directory = job_directory(job_id)
+    if output.kind == "image":
+        return render_image(directory, output, still, content, brand, run_token)
+    require_tools()
     scratch = directory / f"render-{run_token}"
     scratch.mkdir(exist_ok=True)
     try:
-        for i, scene in enumerate(content.scenes):
-            scene_image(source, scene.text, brand.get("brand_name", ""), i, len(content.scenes), scratch / f"scene-{i}.png")
-            frames = scene.duration_seconds * 24
-            filters = (f"zoompan=z='min(zoom+0.00015,1.03)':d={frames}:s=1080x1920:fps=24,"
-                       f"fade=t=in:st=0:d=0.2,fade=t=out:st={scene.duration_seconds-0.2}:d=0.2,format=yuv420p")
-            run(["ffmpeg", "-y", "-v", "error", "-filter_threads", "1", "-i", str(scratch / f"scene-{i}.png"),
-                 "-vf", filters, "-frames:v", str(frames), "-c:v", "libx264", "-threads", "2",
-                 "-preset", "veryfast", "-crf", "23", "-an", str(scratch / f"clip-{i}.mp4")])
-        manifest = scratch / "clips.txt"
-        manifest.write_text("".join(f"file 'clip-{i}.mp4'\n" for i in range(len(content.scenes))))
-        temporary = directory / f"output-{run_token}.partial.mp4"
-        run(["ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "1", "-i", str(manifest),
-             "-c", "copy", "-movflags", "+faststart", str(temporary)])
-        inspect_video(temporary, sum(scene.duration_seconds for scene in content.scenes))
-        # Decode every frame, not just the container metadata, before accepting the asset.
-        run(["ffmpeg", "-v", "error", "-xerror", "-threads", "2", "-i", str(temporary), "-f", "null", "-"])
-        with Image.open(scratch / "scene-0.png") as image:
-            image.thumbnail((540, 960))
-            image.save(directory / f"thumbnail-{run_token}.jpg", quality=90)
-        output = directory / f"output-{run_token}.mp4"
-        os.replace(temporary, output)
-        return output, directory / f"thumbnail-{run_token}.jpg"
+        if source_video:
+            return render_from_video(directory, scratch, output, source_video, content, brand, run_token, music)
+        return render_slideshow(directory, scratch, output, still, content, brand, run_token, music)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
+
+
+def render_video(job_id: UUID, source: str, content: SocialContent, brand: dict, run_token: UUID) -> tuple[Path, Path]:
+    """Backward-compatible entry point: still image to Instagram Reel."""
+    return render_output(job_id, INSTAGRAM_REEL, source, content, brand, run_token)

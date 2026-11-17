@@ -41,7 +41,7 @@ async def database_error(request: Request, exc: SQLAlchemyError):
 
 app.include_router(router)
 app.add_middleware(CORSMiddleware, allow_origins=[settings.frontend_origin],
-                   allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
+                   allow_methods=["GET", "POST"], allow_headers=["Content-Type"], allow_credentials=True)
 
 
 class HealthResponse(BaseModel):
@@ -71,7 +71,7 @@ def check_database() -> str:
     try:
         with engine.connect() as conn:
             revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-            if revision != "0003":
+            if revision != "0006":
                 return "migration_required"
         return "ok"
     except Exception:

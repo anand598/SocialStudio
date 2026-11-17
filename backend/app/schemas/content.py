@@ -1,4 +1,6 @@
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+PLACEHOLDERS = {"", "null", "none", "n/a", "na", "unknown", "unspecified"}
 
 
 class StrictModel(BaseModel):
@@ -12,16 +14,26 @@ class ProductAnalysis(StrictModel):
     visible_text: list[str] = Field(max_length=6)
     likely_audience: str = Field(max_length=240, description="An inference, never an observed fact")
     visual_style: str = Field(max_length=240)
-    confidence_or_limitations: str = Field(min_length=1, max_length=500)
+    # Order matters for constrained decoding: the model treats the limitations summary as the end of
+    # its answer, so it must be the final property (a required field after it caused runaway output).
     facts_needing_user_confirmation: list[str] = Field(max_length=6)
+    confidence_or_limitations: str = Field(min_length=1, max_length=500)
+
+    @field_validator("product_name", mode="before")
+    @classmethod
+    def placeholder_is_none(cls, value):
+        # Small models often return the string "null" instead of JSON null.
+        return None if isinstance(value, str) and value.strip().lower() in PLACEHOLDERS else value
 
 
 class Scene(StrictModel):
-    text: str = Field(min_length=1, max_length=100)
+    text: str = Field(min_length=1, max_length=100,
+                      description="Viewer-facing on-screen caption, max ~10 words; never a camera direction")
     duration_seconds: int = Field(ge=2, le=5)
 
 
 class SocialContent(StrictModel):
+    title: str = Field(default="", max_length=100, description="Upload title; required for YouTube")
     hook: str = Field(min_length=1, max_length=80)
     short_description: str = Field(min_length=1, max_length=240)
     benefits: list[str] = Field(max_length=3)

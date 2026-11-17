@@ -1,44 +1,119 @@
+import hashlib
+import hmac
 import logging
+import re
+import secrets
 import shutil
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Literal
 from uuid import UUID, uuid4
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from sqlalchemy.exc import SQLAlchemyError
+from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse
-from app.workers.tasks import generate, expire_stale
+from sqlalchemy import update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 from app.core.config import get_settings
-from app.core.platforms import SUPPORTED_FORMATS
+from app.core.platforms import SUPPORTED_FORMATS, get_format
 from app.db.session import get_session
 from app.models.job import GenerationJob
 from app.schemas.jobs import JobResponse
-from app.services.storage.local import job_directory, store_image
+from app.services.ingest.url import UrlRejected, check_url
+from app.services.storage.local import (check_music_type, create_job_directory, job_directory, store_image,
+                                        store_music, store_video)
+from app.workers.tasks import expire_stale, generate
 
 router = APIRouter(prefix="/api/v1")
 logger = logging.getLogger(__name__)
 
+# Access control: the browser that creates a job receives a random HttpOnly cookie, and the job
+# stores only its hash. A job URL alone does not grant access; anyone else gets a plain 404.
+OWNER_COOKIE = "studio_owner"
+OWNER_COOKIE_DAYS = 30
+TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{43}$")
+
+
+def owner_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def owner_token(studio_owner: str | None = Cookie(None)) -> str | None:
+    return studio_owner if studio_owner and TOKEN_PATTERN.match(studio_owner) else None
+
+
+def set_owner_cookie(response: Response, token: str) -> None:
+    response.set_cookie(OWNER_COOKIE, token, max_age=OWNER_COOKIE_DAYS * 86400, path="/", httponly=True,
+                        samesite="lax", secure=get_settings().cookie_secure)
+
 
 @router.get("/config/platforms")
 def platforms():
-    return {"formats": SUPPORTED_FORMATS, "generation_mode": get_settings().generation_mode,
-            "max_upload_size_mb": get_settings().max_upload_size_mb}
+    settings = get_settings()
+    return {"formats": [{**item.model_dump(exclude={"copy_guidance"})} for item in SUPPORTED_FORMATS],
+            "input_types": ["image", "video", "url"],
+            "generation_mode": settings.generation_mode,
+            "max_upload_size_mb": settings.max_upload_size_mb,
+            "max_video_upload_size_mb": settings.max_video_upload_size_mb,
+            "max_source_video_seconds": settings.max_source_video_seconds,
+            "max_music_upload_size_mb": settings.max_music_upload_size_mb,
+            "max_music_seconds": settings.max_music_seconds}
 
 
 @router.post("/generations", response_model=JobResponse, status_code=202)
 async def create_generation(
-    file: UploadFile = File(...), platform: str = Form(...), format: str = Form(...),
+    response: Response,
+    platform: str = Form(...), format: str = Form(...),
+    input_type: Literal["image", "video", "url"] = Form("image"),
+    file: UploadFile | None = File(None),
+    music: UploadFile | None = File(None),
+    source_url: str = Form("", max_length=2048),
     brand_name: str = Form("", max_length=80),
     brand_description: str = Form("", max_length=500),
     call_to_action: str = Form("Explore the collection", max_length=100),
+    token: str | None = Depends(owner_token),
     session: Session = Depends(get_session),
 ):
-    if not any(item.platform == platform and item.format == format for item in SUPPORTED_FORMATS):
-        raise HTTPException(422, "Only Instagram Reel is currently supported.")
+    output = get_format(platform, format)
+    if output is None:
+        raise HTTPException(422, "Choose a supported platform and format.")
+    if music is not None and output.kind != "video":
+        await music.close()
+        raise HTTPException(422, "Background music applies to video formats only.")
     job_id = uuid4()
+    still = media = url = music_path = None
     try:
-        path = await store_image(file, job_id)
+        if music is not None:
+            check_music_type(music)
+        if input_type == "url":
+            if file is not None:
+                raise HTTPException(422, "Send either a product URL or a file, not both.")
+            try:
+                # Fast feedback for obviously unsafe or unresolvable URLs; the worker re-validates every hop.
+                url = await run_in_threadpool(check_url, source_url)
+            except UrlRejected as exc:
+                raise HTTPException(422, str(exc)) from exc
+            create_job_directory(job_id)
+        elif file is None:
+            raise HTTPException(422, f"Upload a product {input_type}.")
+        elif input_type == "video":
+            media, still = await store_video(file, job_id)
+        else:
+            still = await store_image(file, job_id)
+        if music is not None:
+            try:
+                music_path = await store_music(music, job_directory(job_id))
+            except HTTPException:
+                shutil.rmtree(job_directory(job_id), ignore_errors=True)
+                raise
     finally:
-        await file.close()
-    job = GenerationJob(id=job_id, input_file_path=path, platform=platform, format=format,
+        for upload in (file, music):
+            if upload is not None:
+                await upload.close()
+    token = token or secrets.token_urlsafe(32)
+    job = GenerationJob(id=job_id, input_type=input_type, input_file_path=still, source_media_path=media,
+                        owner_hash=owner_hash(token),
+                        source_url=url, music_path=music_path, platform=platform, format=format,
                         brand_context={"brand_name": brand_name.strip(), "brand_description": brand_description.strip(),
                                        "call_to_action": call_to_action.strip() or "Explore the collection"},
                         generation_mode=get_settings().generation_mode)
@@ -51,21 +126,26 @@ async def create_generation(
         shutil.rmtree(job_directory(job_id), ignore_errors=True)
         logger.exception("Could not persist job %s", job_id)
         raise HTTPException(503, "Storage is unavailable. Please try again shortly.") from exc
+    set_owner_cookie(response, token)  # Refreshes the expiry on every new job.
     enqueue(job, session)
     return job
 
 
-def find_job(job_id: UUID, session: Session) -> GenerationJob:
+def find_job(job_id: UUID, session: Session, token: str | None) -> GenerationJob:
     expire_stale(session)
     job = session.get(GenerationJob, job_id)
-    if not job:
+    # Missing, ownerless, and other people's jobs are indistinguishable to the caller.
+    if not job or not job.owner_hash or not token or not hmac.compare_digest(job.owner_hash, owner_hash(token)):
         raise HTTPException(404, "Generation not found.")
     return job
 
 
+Owner = Depends(owner_token)
+
+
 @router.get("/generations/{job_id}", response_model=JobResponse)
-def get_generation(job_id: UUID, session: Session = Depends(get_session)):
-    return find_job(job_id, session)
+def get_generation(job_id: UUID, token: str | None = Owner, session: Session = Depends(get_session)):
+    return find_job(job_id, session, token)
 
 
 def enqueue(job: GenerationJob, session: Session) -> None:
@@ -80,13 +160,11 @@ def enqueue(job: GenerationJob, session: Session) -> None:
 
 
 @router.post("/generations/{job_id}/retry", response_model=JobResponse, status_code=202)
-def retry_generation(job_id: UUID, session: Session = Depends(get_session)):
-    job = find_job(job_id, session)
+def retry_generation(job_id: UUID, token: str | None = Owner, session: Session = Depends(get_session)):
+    job = find_job(job_id, session, token)
     if job.status != "failed":
         raise HTTPException(409, "Only failed generations can be retried.")
     # A conditional update prevents concurrent retries from publishing duplicate work.
-    from sqlalchemy import update
-    from datetime import datetime, timezone
     result = session.execute(update(GenerationJob).where(GenerationJob.id == job_id,
         GenerationJob.status == "failed").values(status="queued", stage="validating", progress=0,
             error_code=None, error_message=None, completed_at=None, updated_at=datetime.now(timezone.utc)))
@@ -99,41 +177,47 @@ def retry_generation(job_id: UUID, session: Session = Depends(get_session)):
 
 
 @router.get("/generations/{job_id}/content")
-def get_content(job_id: UUID, session: Session = Depends(get_session)):
-    job = find_job(job_id, session)
+def get_content(job_id: UUID, token: str | None = Owner, session: Session = Depends(get_session)):
+    job = find_job(job_id, session, token)
     if job.status != "completed":
         raise HTTPException(409, "The generation is not complete yet.")
-    return {"generation_mode": job.generation_mode, "analysis": job.product_analysis, "content": job.generated_content}
+    return {"generation_mode": job.generation_mode, "analysis": job.product_analysis,
+            "content": job.generated_content, "post_text": job.post_text, "source": job.source_metadata}
 
 
-def completed_asset(job_id: UUID, session: Session, name: str):
-    job = find_job(job_id, session)
+def completed_asset(job: GenerationJob, name: Literal["output", "thumbnail"]) -> Path:
     if job.status != "completed":
         raise HTTPException(409, "The generation is not complete yet.")
-    from pathlib import Path
-    stored = job.output_file_path if name == "output.mp4" else job.thumbnail_file_path
+    stored = job.output_file_path if name == "output" else job.thumbnail_file_path
     if not stored:
         raise HTTPException(404, "This result is missing.")
     path = Path(stored).resolve()
-    if path.parent != job_directory(job_id):
+    if path.parent != job_directory(job.id):
         raise HTTPException(404, "This result is unavailable.")
     if not path.is_file():
         raise HTTPException(404, "This result is missing. Please create a new generation.")
     return path
 
 
+def media_type(path: Path) -> str:
+    return "image/jpeg" if path.suffix == ".jpg" else "video/mp4"
+
+
 @router.get("/generations/{job_id}/download")
-def download(job_id: UUID, session: Session = Depends(get_session)):
-    return FileResponse(completed_asset(job_id, session, "output.mp4"), media_type="video/mp4",
-                        filename=f"instagram-reel-{job_id}.mp4", headers={"Cache-Control": "private, no-store"})
-
-
-@router.get("/generations/{job_id}/preview")
-def preview(job_id: UUID, session: Session = Depends(get_session)):
-    return FileResponse(completed_asset(job_id, session, "output.mp4"), media_type="video/mp4",
+def download(job_id: UUID, token: str | None = Owner, session: Session = Depends(get_session)):
+    job = find_job(job_id, session, token)
+    path = completed_asset(job, "output")
+    return FileResponse(path, media_type=media_type(path), filename=f"{job.platform}-{job.format}-{job_id}{path.suffix}",
                         headers={"Cache-Control": "private, no-store"})
 
 
+@router.get("/generations/{job_id}/preview")
+def preview(job_id: UUID, token: str | None = Owner, session: Session = Depends(get_session)):
+    path = completed_asset(find_job(job_id, session, token), "output")
+    return FileResponse(path, media_type=media_type(path), headers={"Cache-Control": "private, no-store"})
+
+
 @router.get("/generations/{job_id}/thumbnail")
-def thumbnail(job_id: UUID, session: Session = Depends(get_session)):
-    return FileResponse(completed_asset(job_id, session, "thumbnail.jpg"), media_type="image/jpeg")
+def thumbnail(job_id: UUID, token: str | None = Owner, session: Session = Depends(get_session)):
+    return FileResponse(completed_asset(find_job(job_id, session, token), "thumbnail"), media_type="image/jpeg",
+                        headers={"Cache-Control": "private, no-store"})

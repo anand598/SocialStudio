@@ -40,7 +40,9 @@ def test_unsupported_format(client, image_bytes):
 
 def test_streamed_request_size_limit(client, monkeypatch):
     monkeypatch.setattr(get_settings(), "max_upload_size_mb", 1)
-    response = client.post("/api/v1/generations", content=iter([b"x" * (2 * 1024 * 1024)]),
+    monkeypatch.setattr(get_settings(), "max_video_upload_size_mb", 1)
+    monkeypatch.setattr(get_settings(), "max_music_upload_size_mb", 1)
+    response = client.post("/api/v1/generations", content=iter([b"x" * (3 * 1024 * 1024)]),
                            headers={"Content-Type": "multipart/form-data; boundary=test"})
     assert response.status_code == 413
 

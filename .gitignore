@@ -11,3 +11,10 @@ node_modules/
 *.tsbuildinfo
 .DS_Store
 *.log
+/delivery/*.mp4
+/delivery/*.mov
+/delivery/*.webm
+/delivery/*.zip
+
+# Assessment brief: kept local, not published
+/Tech Lead Assessment*.pdf

@@ -28,7 +28,10 @@ class UploadLimitsMiddleware:
             return await JSONResponse({"detail": "Too many generation requests. Please wait a minute and try again."}, 429,
                                       headers={"Retry-After": "60"})(scope, receive, send)
         times.append(now)
-        limit = settings.max_upload_size_mb * 1024 * 1024 + 64 * 1024
+        # Per-type limits are enforced while streaming; this is the outer bound for any upload
+        # (the largest product file plus an optional music track).
+        largest = max(settings.max_upload_size_mb, settings.max_video_upload_size_mb)
+        limit = (largest + settings.max_music_upload_size_mb) * 1024 * 1024 + 64 * 1024
         headers = dict(scope["headers"])
         try:
             declared = int(headers.get(b"content-length", b"0"))

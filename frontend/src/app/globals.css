@@ -587,11 +587,13 @@ textarea::placeholder {
   flex-direction: column;
   align-items: center;
 }
-.finished-preview video {
+.finished-preview video,
+.finished-preview img {
   width: 100%;
-  max-width: 270px;
-  max-height: 500px;
-  aspect-ratio: 9/16;
+  max-width: var(--preview-width, 270px);
+  max-height: 520px;
+  aspect-ratio: var(--preview-ratio, 9 / 16);
+  object-fit: contain;
   border-radius: 12px;
   background: #173b34;
   box-shadow: 0 10px 30px #183d3618;
@@ -781,4 +783,127 @@ footer span:last-child {
   .desktop-break {
     display: none;
   }
+}
+
+/* Input type switcher, URL hint and selected-format summary. */
+.input-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  padding: 4px;
+  margin-bottom: 18px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fbfcf9;
+}
+.input-tabs button {
+  border: 0;
+  border-radius: 7px;
+  padding: 10px 6px;
+  font-size: 12px;
+  background: transparent;
+  color: var(--muted);
+}
+.input-tabs button.active {
+  background: var(--ink);
+  color: #fff;
+}
+.input-tabs button:not(.active):not(:disabled):hover {
+  background: #eef2e8;
+  color: var(--ink);
+}
+.input-tabs button:disabled {
+  cursor: not-allowed;
+}
+.field-hint {
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--muted);
+  margin: 8px 0 0;
+}
+input[aria-invalid="true"] {
+  border-color: #c96b4f;
+}
+.format-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px dashed var(--line);
+  border-radius: 9px;
+  font-size: 11px;
+}
+.format-card div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.format-card span:not(.format-shape) {
+  color: var(--muted);
+  font-size: 10px;
+}
+.format-shape {
+  flex: none;
+  width: auto;
+  height: 34px;
+  max-width: 60px;
+  border: 2px solid var(--ink);
+  border-radius: 4px;
+  background: var(--lime);
+}
+
+.music-field {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.music-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  overflow: hidden;
+}
+.music-button {
+  display: inline-flex;
+  align-items: center;
+  background: #fff;
+  border: 1px solid var(--line);
+  padding: 8px 14px;
+  border-radius: 20px;
+  font-size: 12px;
+  cursor: pointer;
+  box-shadow: 0 2px 8px #0001;
+}
+.music-input:focus-visible + .music-button {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+.music-input:disabled + .music-button {
+  opacity: 0.5;
+  cursor: default;
+}
+.music-chosen {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 14px;
+}
+.music-chosen > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+.music-chosen button {
+  border: 0;
+  background: none;
+  padding: 0;
+  text-decoration: underline;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
 }

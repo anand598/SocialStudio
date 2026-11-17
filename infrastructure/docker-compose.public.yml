@@ -1,0 +1,25 @@
+# Add after the two local Compose files for an explicitly authorized public deployment.
+services:
+  api:
+    environment:
+      # Served over HTTPS: the job-owner cookie must never travel in clear text.
+      COOKIE_SECURE: "true"
+  proxy:
+    image: caddy:2-alpine
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?Set the public HTTPS hostname}
+      REVIEW_USERNAME: ${REVIEW_USERNAME:?Set a reviewer username}
+      REVIEW_PASSWORD_HASH: ${REVIEW_PASSWORD_HASH:?Set a bcrypt hash using caddy hash-password}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      frontend:
+        condition: service_started
+volumes:
+  caddy_data:
+  caddy_config:

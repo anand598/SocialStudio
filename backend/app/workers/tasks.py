@@ -7,7 +7,10 @@ from app.core.config import get_settings
 from app.db.session import SessionLocal
 from app.models.job import GenerationJob
 from app.services.ai.provider import GenerationError, get_provider
-from app.services.media.renderer import render_video
+from app.core.platforms import get_format
+from app.services.ingest.url import ingest_url
+from app.services.media.renderer import render_output
+from app.services.storage.local import job_directory
 from app.workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -55,21 +58,41 @@ def generate(self, job_id_string: str):
             return
         job = session.get(GenerationJob, job_id)
     try:
+        output = get_format(job.platform, job.format)
+        if output is None:
+            raise GenerationError("UNSUPPORTED_FORMAT", "This output format is no longer supported.")
         provider = get_provider(job.generation_mode)
-        if not transition(job_id, run_token, stage="analyzing", progress=15):
+        still, source = job.input_file_path, job.source_metadata
+        if job.input_type == "url" and not still:
+            # Fetch inside the worker: slow, untrusted network I/O stays off the API, and a retry
+            # after a successful fetch reuses the stored image instead of refetching.
+            if not transition(job_id, run_token, stage="fetching", progress=10):
+                return
+            still, source = ingest_url(job.source_url, job_directory(job_id))
+            if not transition(job_id, run_token, input_file_path=still, source_metadata=source):
+                return
+        if not transition(job_id, run_token, stage="analyzing", progress=20):
             return
-        analysis = provider.analyze_product_image(job.input_file_path)
-        if not transition(job_id, run_token, stage="writing_copy", progress=35, product_analysis=analysis.model_dump()):
+        storyboard = job_directory(job_id) / "storyboard.jpg"
+        if job.input_type == "video" and storyboard.is_file():
+            # Four moments across the clip, not one frame, so later shots and angles inform the copy.
+            analysis = provider.analyze_product_video(str(storyboard))
+        else:
+            analysis = provider.analyze_product_image(still)
+        if not transition(job_id, run_token, stage="writing_copy", progress=40, product_analysis=analysis.model_dump()):
             return
-        content = provider.generate_social_content(analysis, job.brand_context)
+        content = provider.generate_social_content(analysis, job.brand_context, output, source)
         if not transition(job_id, run_token, stage="rendering", progress=55, generated_content=content.model_dump()):
             return
-        output, thumbnail = render_video(job.id, job.input_file_path, content, job.brand_context, run_token)
+        rendered, thumbnail = render_output(job.id, output, still, content, job.brand_context, run_token,
+                                            job.source_media_path if job.input_type == "video" else None,
+                                            music=job.music_path)
         if not transition(job_id, run_token, stage="finalizing", progress=95):
             return
         transition(job_id, run_token, status="completed", stage="completed", progress=100,
-                   output_file_path=str(output), thumbnail_file_path=str(thumbnail), completed_at=now())
-        logger.info("Generation completed job_id=%s mode=%s", job_id, job.generation_mode)
+                   output_file_path=str(rendered), thumbnail_file_path=str(thumbnail), completed_at=now())
+        logger.info("Generation completed job_id=%s mode=%s input=%s format=%s/%s", job_id, job.generation_mode,
+                    job.input_type, job.platform, job.format)
     except GenerationError as exc:
         if exc.transient and self.request.retries < self.max_retries:
             transition(job_id, run_token, status="queued", stage="retry_wait", progress=0)

@@ -48,16 +48,91 @@ The UI provides drag/drop and browse, brand/CTA inputs, supported format selecti
 
 README, architecture, deployment preparation, and a four-minute walkthrough script are supplied. Non-root backend/frontend Dockerfiles and a full Compose override are prepared. Docker images/Compose, Redis integration, host/container Ollama access, and live model inference remain **unverified**. No public URL or recorded walkthrough exists yet. Hosting target, access/account, and authorized budget are required before public deployment. A local Git repository has been initialized for the implementation; no remote repository has been created or pushed.
 
+## Phase 8 — all inputs, platforms, and formats
+
+The assessment lists URL, image, and video inputs and Instagram/TikTok/YouTube outputs; P0 covered one path. This phase extends the same pipeline rather than adding parallel ones.
+
+- **Format registry:** Instagram Reel (9:16 MP4), Feed 4:5 and Square 1:1 (JPEG); TikTok Video (9:16 MP4); YouTube Short (9:16 MP4), Video (16:9 1080p MP4), Thumbnail (1280 × 720 JPEG). Each carries caption/hashtag limits, enforced when composing the downloadable post text (YouTube adds a title and keeps ≤ 3 hashtags).
+- **Video input:** streamed to disk, ffprobe-validated (container, codec allow-list, ≤ 4096 px, 1–180 s), keyframe extracted for analysis. Video outputs reframe the real clip over a blurred fill with overlays and original audio; image outputs use the keyframe.
+- **URL input:** API pre-check, then worker `fetching` stage with SSRF defences (public-IP-only DNS, connection pinned to the checked IP with Host/SNI preserved, manual re-validated redirects, size/time caps). Open Graph image/title/description are extracted; page text is passed to the model as untrusted data. Demo mode may quote the page title but never infers claims from it.
+- **Renderer:** one layout engine for portrait, square, and landscape canvases; image outputs are verified by reopening the JPEG; video outputs keep the ffprobe + full-decode gate.
+- **Migration 0004:** nullable `input_file_path` (URL jobs receive it after fetch), `source_media_path`, `source_url`, `source_metadata`. Applied, downgraded, and re-applied on SQLite; the PostgreSQL offline SQL was reviewed.
+- **UI:** input-type tabs, platform → format selectors from the registry, a dimension/type summary, input-aware stage list, aspect-correct video or image preview, and platform-specific post text.
+
+Verification: **62 backend tests** (new: registry dimensions/aspect ratios, post-text limits, every image format's JPEG size, still → 16:9 video, video upload validation and rejection, video → 9:16 and 16:9 with audio, video → image, SSRF shape/address/mixed-DNS/redirect rejection, Open Graph extraction with connection pinning, unusable pages, URL job end to end) and **8 frontend tests** pass; typecheck and production build pass. A live launcher run (API + separate filesystem-queue worker + Next.js proxy) completed image → Instagram 4:5 and Reel, video → YouTube Short and 16:9 (audio kept, source length kept), and a real public product URL → TikTok; a page without `og:image` failed with `URL_NO_IMAGE`; metadata-IP, loopback, and `file://` URLs were rejected at submission.
+
+Operational finding: two launcher instances sharing `storage/demo/queue` consumed each other's jobs (an older worker rendered new jobs with old code). The launcher now accepts `RUNTIME_DIR` for isolation; production uses Redis with one deployed worker version.
+
+## Phase 9 — live inference verified; multi-frame video analysis
+
+Live Ollama inference was verified on this machine with `qwen3.5:4b` (reports `vision`): image analysis + copy for the sample took ~40 s and stayed factual (verbatim label text, no invented specs, explicit uncertainties). It exposed two defects, both fixed test-first: scene text came back as camera directions although it is rendered on screen (prompt and schema now require viewer-facing captions ≤ 10 words), and `product_name` arrived as the string "null" (placeholders now normalize to null).
+
+Video analysis previously used one frame ~1 s in. Uploads now also produce a numbered 2×2 storyboard of frames at 10/37/63/90 % of the clip; the worker sends it to `analyze_product_video`, whose prompt explains the time order and asks the model to merge details across frames and describe how the product is shown over time. A single composite stays within the 4096-token context budget that suits a 16 GB machine, where four separate images might not. Storyboard failure is non-fatal (falls back to the keyframe). Live check on a four-shot clip: 24 s, details merged across shots, limitations stated. Field-length truncation from constrained decoding was fixed by asking for concise fields. Audio/speech is not analyzed.
+
+## Phase 10 — live browser testing and a structured-output runaway
+
+The app was driven in headless Chrome (system Chrome via playwright-core) against the live Ollama stack: landing, platform/format switching, image → Reel and 4:5, video → TikTok and YouTube 16:9, URL → YouTube thumbnail, refresh restore, client and server input errors, mobile layout, and failed requests.
+
+The first run exposed intermittent AI failures: image analyses exceeding the 120 s timeout and a URL job failing with `AI_INVALID_CONTENT`. Sampling the same request showed ~31 % of analysis calls finishing with `done_reason=length` at the full 2,200-token budget although only ~520 characters were visible: constrained decoding looped on whitespace. Every runaway stopped right after `confidence_or_limitations`, the field the model treats as its conclusion, while a required list field still followed. Fixes, test-first: (1) the concluding field is now last in the schema (runaways fell to ~7 % in a 14-run sample); (2) per-schema token budgets (analysis 800, copy 1,500) make a residual runaway fail in seconds instead of ~60 s; (3) truncated output is retried up to three times; (4) validation failures are logged with field/type and truncation flag, never the generated text. The machine was also under heavy memory pressure (≈19 of 20 GB swap used), which magnified each runaway into a timeout.
+
+Browser testing also found, and test-first fixes resolved: a missing favicon (404 on every load); `#job=` links only read on first load, so back/forward and pasted links on an open tab did not switch jobs (now follows `hashchange`, and a URL without a job returns to the empty studio); and post text repeating hashtags or the CTA that the model had also put inside the caption (now merged/deduplicated, and the prompt asks for a clean caption).
+
+After the fixes the live browser suite passed: image → Reel 34 s and 4:5 18 s, video → TikTok 34 s and YouTube 16:9 29 s, URL → YouTube thumbnail 26 s (previously 75–309 s with two failures), plus 13/13 navigation, error-handling, mobile, and network checks. Totals: 71 backend and 10 frontend tests.
+
 ## Known limitations and next improvements
 
-1. Add reviewer authentication or explicit access control, HTTPS/ingress size limits, shared quotas, storage retention, and monitoring before public/private product use. Current random UUID URLs act as bearer capabilities, and rate limiting is process-local.
-2. Verify real Ollama inference using a vision model that fits the host memory budget. Keep demo labeling if live inference is not available.
+1. Results are now private to the creating browser (owner cookie). Before public use still add user accounts or reviewer access, HTTPS, shared quotas, storage retention, and monitoring; rate limiting is process-local.
+2. Live inference is verified locally with `qwen3.5:4b`; a hosted deployment still needs a model host with enough memory (or explicitly labeled demo mode).
 3. Build/run the Docker PostgreSQL/Redis topology and validate in a clean browser before claiming production readiness.
 4. Add a transactional outbox for atomic database-to-broker delivery; current publish failure plus expiry is recoverable but not an exactly-once delivery guarantee.
 5. Local media needs shared storage on one host. Add S3-compatible storage/signed URLs before multi-host scaling. Failed/retried artifacts currently have no automatic retention cleanup.
 6. Review AI claims manually; schema validation and prompts cannot guarantee factual accuracy. Non-Latin font coverage depends on the configured font. No copyright music is bundled.
-7. Only still image → Instagram Reel is implemented. Source video, URL input, history UI, more formats, and generative image/video synthesis are pending. Existing jobs remain accessible through their saved URL, not an account history.
+7. History UI, per-user brand kits, multi-variant generation, and generative image/video synthesis are pending. Existing jobs remain accessible through their saved URL, not an account history.
+8. URL ingestion depends on Open Graph/Twitter image tags; many large retailers block automated fetches (reported as `URL_BLOCKED` with an upload suggestion). JSON-LD product data and headless rendering for JavaScript-only pages are not implemented.
+9. Video understanding samples four frames and ignores audio; long clips with many products or spoken claims need denser sampling and speech-to-text (e.g. Whisper) before copywriting.
+10. Source video is re-encoded by FFmpeg on the worker. Production handling of hostile media should add sandboxing (seccomp/gVisor or an isolated transcoding service) and a per-job CPU budget.
 
 ## Local connection fix — 2026-11-16
 
 The browser-facing UI now uses same-origin `/api` URLs, with Next.js proxying to the configured backend. The demo launcher sets the proxy to its chosen API port; Docker builds target the `api` service. This removes separate browser-port/CORS dependencies for the normal workflow. Five frontend tests, TypeScript, and the production build pass. A full separate-worker smoke test through `http://localhost:3000` verified configuration, multipart upload, status polling, MP4 download, and caption retrieval.
+
+## Large uploads through the UI proxy — 2026-11-17
+
+A 34 MB video uploaded through the UI returned HTTP 500 while the same file posted directly to the API was accepted. Next.js truncates bodies proxied through its `/api` rewrite at 10 MB by default (`middlewareClientMaxBodySize`), so every video over 10 MB, and images between 10 and 15 MB, failed in the browser. Earlier browser tests used a small clip, which hid this. `next.config.mjs` now allows 110 MB (the 100 MB video limit plus multipart overhead; the API still enforces per-type limits), a frontend test ties the setting to the backend limit, and the prepared Caddy ingress limit was raised from 16 MB to match. Verified: the same 34 MB upload through `http://localhost:3000` is accepted and processed.
+
+## Phase 11 — private results, output polish, recorded walkthrough — 2026-11-17
+
+**Access control.** Job links used to act as the only access key. Creating a job now sets a random `HttpOnly`, `SameSite=Lax` owner cookie; the job stores its SHA-256 hash (migration `0005`). Status, content, preview, download, thumbnail, and retry compare it in constant time and otherwise return the same 404 as a missing job. A cookie was chosen over a header because media elements and download links cannot send headers. `COOKIE_SECURE` marks it Secure behind HTTPS (set in the public override); CORS allows credentials for a separately hosted API. In the UI, a link opened in another browser stops polling and explains that results open only where they were created. Tests: 6 backend, 1 frontend. Verified live through the Next.js proxy: the owner gets 200 and a cookie-less request gets 404.
+
+**Output review.** Rendered frames from every path were reviewed and fixed test-first:
+- Template videos never showed the AI's hook. They now open with a 2-second hook card. It is skipped when the first scene overlaps it: live output once split the hook "Not for sale. Just for show." across the first two scenes, so the card repeated them.
+- Headlines, overlays, and CTAs were thin and small. They now use bold faces (DejaVu Sans Bold in Docker, Arial Bold on macOS, `FONT_BOLD_PATH` to override) at larger sizes. The YouTube thumbnail headline grew from 54 px to up to 94 px, since thumbnails are judged at about 300 px wide.
+- On 9:16 video, the CTA sat inside the bottom area that TikTok, Reels, and Shorts cover with captions and buttons. Overlays and template text now stay between 10% and 80% of the height.
+
+**Walkthrough.** A captioned walkthrough of the live app (image → Reel, video → TikTok, URL → YouTube thumbnail, refresh restore, unsafe-input rejection, access control) was recorded in headless Chrome via the DevTools screencast, with real-time waits, and encoded with FFmpeg to `delivery/walkthrough.mp4` (gitignored; share it separately).
+
+- Reported from Safari: a finished Reel showed an almost-black frame. Every template scene faded out, including the last one, so the ended player rested on black (the first frame was also black, hidden only by the thumbnail poster). Scenes now dip to black only between scenes; the video opens and ends on a full frame.
+
+Totals: 89 backend and 12 frontend tests.
+
+## Phase 12 — promo-style video from a still — 2026-11-17
+
+Feedback: the still → video output did not look like a promotion video and its background looked poor. The flat dark-green template, the beige mat around the photo (worst with landscape photos), a single static framing, captions baked into the frame, and dips to black all read as a slideshow.
+
+`app/services/media/promo.py` replaces the template, test-first (`tests/test_promo.py`):
+- **Backdrop from the product:** the photo is cover-scaled, heavily blurred, and tinted dark with its dominant colour. The accent colour (caption bar, CTA button) is a light tint of the same hue; grey products fall back to the studio palette.
+- **Card without a mat:** the photo keeps its own aspect ratio, with rounded corners and a soft shadow. On 9:16 canvases very wide photos are trimmed to 1.3:1 so the card fills the frame.
+- **Shot plan:** whole product (slow push-in), then close-up detail shots that push in, pan, or pull back, then the whole product again on an end card. Zoom is limited by the source resolution, and each shot gets its own pre-scaled source so sampling stays near 1:1 without shimmer.
+- **Motion and type:** an accent bar grows and each caption slides up as the scene starts. Scenes cross-fade over 0.4 s. On the end card a CTA button pops in, and if the last caption only repeated the CTA, the opening line returns as the headline.
+- **Rendering:** frames are composed in Pillow with sub-pixel sampling, because FFmpeg zoompan jitters on slow moves, and streamed to FFmpeg as raw video under the existing timeout. A 13 s 1080×1920 promo renders in about 10 s.
+- **Posters** (feed, square, thumbnail) use the same backdrop, card, and type.
+
+Verified live: picsum laptop URL → Instagram Reel in 54 s end to end (1080×1920, 10 s). Totals: 99 backend tests. No music is bundled because of licensing; see Phase 13 for user-supplied music.
+
+## Phase 13 — optional background music — 2026-11-17
+
+Video formats accept an optional music upload (`music` form field; MP3, M4A, or WAV; 20 MB / 10 minutes by default). It is refused for image formats. The API checks that MIME type and extension agree before storing anything, streams the file into the job folder under a byte cap, and validates it with ffprobe (audio stream, container and codec allow-lists, duration). Any failure removes the whole job folder. The request-size bound now allows the largest product file plus a track. Migration `0006` adds `music_path`; responses expose `has_music`.
+
+Rendering: for image → promo video, the track is loudness-normalized (−16 LUFS), faded in over 0.6 s and out over 1.5 s, and padded with silence or trimmed so it lasts exactly as long as the video. For video input, the music is normalized lower (−20 LUFS, then −9 dB) and mixed under the clip's own sound; if the clip is silent it plays alone. Music never makes a video longer. The UI shows the field only for video formats, with a reminder to use music the user has the rights to.
+
+Tests: 9 backend (formats, rejection and cleanup, full-length padded audio that fades in, mixing under source audio, config limits) and 2 frontend. Verified live: picsum laptop URL plus a synthetic music track → Reel with a 13 s video and a 13 s AAC track (mean −18 dB) in 53 s. Totals: 108 backend and 14 frontend tests.

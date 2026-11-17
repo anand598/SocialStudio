@@ -12,6 +12,7 @@ services:
       GENERATION_MODE: ${GENERATION_MODE:-ollama}
       LOCAL_STORAGE_PATH: /storage
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
     command: ["alembic", "upgrade", "head"]
     depends_on:
       postgres:
