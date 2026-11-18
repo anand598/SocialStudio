@@ -14,7 +14,7 @@ flowchart LR
   Worker --> Render[Pillow scenes and FFmpeg]
   Render --> Files[Shared local media storage]
   API --> Files
-  Beat[Celery beat recovery sweep] --> Broker
+  Beat[Celery beat: stuck-job expiry, media retention] --> Broker
 ```
 
 The frontend receives configuration from a typed backend format registry (`app/core/platforms.py`): seven formats across Instagram, TikTok, and YouTube, each declaring output kind (video/image), exact dimensions, caption length, and hashtag limits. The renderer, validator, copy prompt, post-text composer, and UI all read from it, so adding a format is a data change plus a test.
@@ -25,7 +25,7 @@ The frontend receives configuration from a typed backend format registry (`app/c
 | --- | --- | --- |
 | Image | MIME/extension/content/pixel validation, metadata-stripped JPEG | analyze → copy → render |
 | Video | Streamed to disk under a byte cap; ffprobe checks container, codec, dimensions, duration; keyframe extracted for templates; four frames sampled into a 2×2 storyboard | analyze storyboard (multi-frame) → copy → reframe source video (or poster from keyframe for image formats) |
-| URL | Scheme/port/credential checks and DNS → public-IP check for fast feedback | `fetching` stage: SSRF-safe fetch, Open Graph extraction, image download and normalization, then the image path |
+| URL | Scheme/port/credential checks and DNS → public-IP check for fast feedback | `fetching` stage: SSRF-safe fetch, Product JSON-LD and Open Graph extraction, up to three image candidates downloaded and normalized, then the image path |
 
 URL fetching runs in the worker, not the request: it is slow, untrusted network I/O, and it gets a visible stage, safe error codes (`URL_BLOCKED`, `URL_NO_IMAGE`, `URL_TIMEOUT`, …), and transient retries. A retry after a successful fetch reuses the stored image.
 

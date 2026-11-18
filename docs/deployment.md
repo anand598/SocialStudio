@@ -1,6 +1,8 @@
 # Deployment preparation
 
-No cloud resources have been created and no public URL exists. The supplied Dockerfiles and Compose application override are the concrete deployment starting point. Docker builds are unverified locally because Docker is not installed.
+The live instance is listed in the [submission summary](submission.md). This page covers what any deployment needs. The supplied Dockerfiles and Compose application override are the starting point for a container deployment.
+
+After each update, run `alembic upgrade head` before starting the new API and worker, and keep exactly one scheduler running: it expires stuck jobs every minute and purges expired media every hour. Containers do not read `.env`; settings must be passed through the Compose environment (as `infrastructure/docker-compose.app.yml` does for `MEDIA_RETENTION_DAYS` and the upload limits).
 
 ## Assessment topology
 
@@ -14,13 +16,9 @@ Add an ingress upload/body limit and shared request/usage limits. Restrict revie
 
 Build the images and run the combined Compose files; check migration completion, API readiness, worker registration, and Ollama reachability. Run `backend/scripts/smoke_test.py` against the deployed API. Check video playback, download, caption copy, failure handling, and refresh recovery in a clean browser. Verify dimensions and duration with ffprobe. Confirm no `.env`, runtime media, or credentials are included in the image/repository.
 
-## Information needed to complete public delivery
+## Scaling beyond one host
 
-- Deployment target/account and region, and the authorized spending limit.
-- Public hostname or provided hosting URL, plus intended reviewer access.
-- Whether the assessment deployment should use explicitly labeled demo copy or a provisioned Ollama model.
-
-These decisions are needed before provisioning or exposing services. An AWS multi-host topology can later replace local files with S3 and the database with RDS; that additional infrastructure is not necessary to validate the initial workflow.
+An AWS multi-host topology can later replace local files with S3 and the database with RDS; that additional infrastructure is not necessary to validate the initial workflow.
 
 ## Prepared HTTPS and reviewer access
 

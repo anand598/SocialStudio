@@ -1,80 +1,123 @@
-# Submission notes — how Social Studio meets the brief
+# Social Studio — submission summary
 
-Social Studio turns a product **image, video, or product-page URL** into a ready-to-post **video or image** for **Instagram, TikTok, or YouTube**. It also produces the caption, hashtags, and (for YouTube) title. All three inputs and all seven output formats work end to end, both with live AI (local Ollama) and in an explicitly labeled demo mode.
+Social Studio turns a product **image, video, or product-page link** into ready-to-post content for **Instagram, TikTok, and YouTube**: a video or image at the platform's exact size, plus the caption, hashtags, and (for YouTube) title.
 
-## Requirement checklist
+| Deliverable | Where |
+| --- | --- |
+| Live application | **`<LIVE_URL>`** |
+| Demo video (2 min 12 s, captioned, silent) | **`<VIDEO_LINK>`** (`delivery/walkthrough.mp4`) |
+| Source code | This repository; one commit per feature |
+| README: setup, architecture, technology choices, assumptions, limitations | [README](../README.md), [architecture](architecture.md), [deployment](deployment.md) |
+| Implementation notes: real vs simulated, known issues, trade-offs, next steps | This page; the phase-by-phase log is in [implementation notes](implementation-notes.md) |
 
-| Brief | Status | Where / evidence |
-| --- | --- | --- |
-| Input: URL, image upload, or video upload | ✅ All three | Input tabs in [page.tsx](../frontend/src/app/page.tsx). URL ingest in [ingest/url.py](../backend/app/services/ingest/url.py); upload validation in [storage/local.py](../backend/app/services/storage/local.py) |
-| Choose platform: Instagram, TikTok, YouTube | ✅ | Platform selector driven by `GET /api/v1/config/platforms` |
-| Configure output: format appropriate to the platform | ✅ 7 formats | Format list filtered by platform, from the registry in [platforms.py](../backend/app/core/platforms.py) |
-| Generate a video or image adapted to the aspect ratio and dimensions | ✅ | [renderer.py](../backend/app/services/media/renderer.py). Output is ffprobe-checked against the registry dimensions and fully decoded before the job completes |
-| Show generation status | ✅ | Persisted stages (queued → fetching → analyzing → writing copy → rendering → done), polled by the UI. Restored after refresh via `#job=` |
-| Preview and download | ✅ | Aspect-correct `<video>`/`<img>` preview, file download, and caption copy/download |
-| Extra: background music | ✅ | Optional MP3/M4A/WAV for video formats: fitted to length and faded, or mixed under an uploaded clip's sound |
-| Extra: media retention | ✅ | Media deleted after `MEDIA_RETENTION_DAYS` (default 30) by a scheduled task; record and caption kept; 410 Gone and an expired state in the UI ([retention.py](../backend/app/services/retention.py)) |
-| Extra: another version / repurpose | ✅ | One upload → new versions for any platform and format with fresh copy (`POST /generations/{id}/variants`) |
-| Extra: brand colour and logo | ✅ | Optional colour (exact button colour, hue-tinted backdrop, contrast-safe text) and logo on every format ([promo.py](../backend/app/services/media/promo.py)) |
-| Extra: recent creatives | ✅ | A per-browser history strip reopens past results ([RecentJobs.tsx](../frontend/src/app/RecentJobs.tsx), `GET /api/v1/generations`) |
-| Extra: private results | ✅ | Only the browser that created a job can open it (owner cookie); see "Key decisions" |
-| At least one input and one format end to end | ✅ Exceeded | 3 inputs × 7 formats. The live browser suite covered image → Reel and 4:5, video → TikTok and YouTube 16:9, and URL → YouTube thumbnail |
-| Simulated generation explained if a service is unavailable | ✅ | See "Simulated vs functional" below |
-| Explain code and decisions | ✅ | This document, plus [architecture](architecture.md) and [implementation notes](implementation-notes.md) |
+## What a user can do
+
+1. Upload a product **image** or **video**, or paste a **product page or image URL**.
+2. Choose **Instagram, TikTok, or YouTube**, then a format valid for that platform.
+3. Optionally add a brand name, product context, a call to action, a **brand colour**, a **logo**, and (for videos) **background music**.
+4. Watch the job move through its stages, then **preview** the result, **download** it, and copy or download the caption package.
+5. Make **another version** of a finished result, for any platform and format, from the same upload, with fresh copy.
+6. Reopen earlier results from **Recent creatives**. Results are private to the browser that made them, and their media is deleted after a retention period.
 
 | Platform | Format | Output | Size |
 | --- | --- | --- | --- |
-| Instagram | Reel / Feed 4:5 / Square 1:1 | MP4 / JPEG / JPEG | 1080×1920 / 1080×1350 / 1080×1080 |
+| Instagram | Reel / Feed post 4:5 / Square post 1:1 | MP4 / JPEG / JPEG | 1080×1920 / 1080×1350 / 1080×1080 |
 | TikTok | Video | MP4 | 1080×1920 |
 | YouTube | Short / Video / Thumbnail | MP4 / MP4 / JPEG | 1080×1920 / 1920×1080 / 1280×720 |
 
-Each format also has platform text rules, enforced on the post text: TikTok allows at most 5 hashtags; YouTube allows at most 3 hashtags plus a title of up to 100 characters; caption length limits apply.
+Each format also carries the platform's text rules, which are enforced on the post text: TikTok allows at most 5 hashtags; YouTube allows at most 3 plus a title of up to 100 characters; caption lengths are capped.
 
-## Simulated vs functional
+## The brief, point by point
+
+| Brief | Status | Evidence |
+| --- | --- | --- |
+| Input: URL, image, or video | ✅ All three | Upload validation in [storage/local.py](../backend/app/services/storage/local.py); URL fetching in [ingest/url.py](../backend/app/services/ingest/url.py) |
+| Choose a platform; an appropriate format for it | ✅ 3 platforms, 7 formats | One registry, [platforms.py](../backend/app/core/platforms.py), drives the UI, renderer, prompts, and validation |
+| Generate a video or image at the platform's aspect ratio and dimensions | ✅ | [renderer.py](../backend/app/services/media/renderer.py), [promo.py](../backend/app/services/media/promo.py). Every video is ffprobe-checked and fully decoded before the job completes; every image is reopened and its size checked |
+| Show generation status | ✅ | Each stage is saved in the database and polled by the UI; the job reopens from its link after a refresh |
+| Preview and download | ✅ | Aspect-correct preview, file download, caption copy/download |
+| At least one input and one format end to end | ✅ Exceeded | 3 inputs × 7 formats, verified in a real browser against live AI |
+| Explain what is simulated | ✅ | Next section; demo mode is also labelled in the UI |
+
+## Real vs simulated
 
 | Part | Real or simulated |
 | --- | --- |
-| Upload validation, URL fetching, job queue, status, storage, preview, download | Real |
-| Media rendering (Pillow + FFmpeg) at exact platform dimensions | Real, in both modes |
-| Product analysis (what is in the image or video) and copywriting | **Real** in `ollama` mode (local `qwen3.5:4b` vision model). **Simulated** in `demo` mode: deterministic template copy, no image analysis. The UI shows a banner when demo mode is on |
-| Generative video/image synthesis (text-to-video, AI image editing) | **Not used.** Videos are built from your media: still images are animated with zoom/fade scenes; source videos are reframed with overlays and their original audio |
+| Uploads, URL fetching, job queue, status, storage, preview, download, retention | Real |
+| Rendering every frame and image (Pillow + FFmpeg) at exact dimensions | Real in both modes |
+| Product analysis and copywriting | **Real** in `ollama` mode (local `qwen3.5:4b` vision model). **Simulated** in `demo` mode: deterministic template copy, no analysis. The UI shows a banner in demo mode, and every job records its mode |
+| Generative image or video synthesis (text-to-video, AI image editing) | **Not used**, by choice: outputs are built from the user's own media (see trade-offs) |
 
-The mode is chosen in configuration and stored on every job. The app never falls back to demo silently.
+The app never silently falls back to demo copy. The live instance runs in **`<MODE>`** mode. The demo video shows live AI.
 
 ## How it works
 
 ```
-Browser (Next.js) ──/api proxy──▶ FastAPI ──job id──▶ Celery worker
-                                    │                    │ fetch URL (SSRF-safe)
-                                    ▼                    │ analyze (Ollama vision)
-                              Job table (status,        │ write copy (structured JSON)
-                              results, errors)  ◀───────┘ render (Pillow/FFmpeg) → validate
+Browser (Next.js) ──/api proxy──▶ FastAPI ──job id──▶ Celery worker ──▶ fetch URL (SSRF-safe)
+                                     │                     │              analyse (vision model)
+                                     ▼                     │              write copy (schema-checked JSON)
+                               PostgreSQL job row ◀────────┘              render (Pillow/FFmpeg) → validate
+                               (status, stage, results, errors)
+Celery beat: expire stuck jobs every minute · purge expired media every hour
 ```
 
-1. **API** ([generations.py](../backend/app/api/generations.py)) validates the input and format, stores the file, creates a job row, and enqueues only the job ID. It returns 202 immediately.
-2. **Worker** ([tasks.py](../backend/app/workers/tasks.py)) runs the stages and saves each one to the database, so the UI shows real progress and survives restarts.
-3. **AI provider** ([provider.py](../backend/app/services/ai/provider.py)) asks the model for JSON that matches a Pydantic schema ([content.py](../backend/app/schemas/content.py)), validates it, and retries bounded failures. For a video it analyzes a 2×2 storyboard of four frames taken across the clip, not just one frame.
-4. **Renderer** produces one of three outputs: a designed poster with a bold headline (image formats), a promo video built from the photo itself: tinted, blurred backdrop, the product in a shadowed card, a shot plan of whole product → close-ups → end card with a CTA button, animated captions, and cross-fades (still → video), or the source clip reframed over a blurred fill with hook, CTA, and brand overlays (video → video). On 9:16 video, text stays clear of the areas TikTok, Reels, and Shorts cover with their own UI.
-5. **UI** ([page.tsx](../frontend/src/app/page.tsx)) polls the job and shows stages, the preview, downloads, and errors with a retry option.
+1. **API** ([generations.py](../backend/app/api/generations.py)) validates the input and format, stores the file, creates the job row, and queues only the job ID. It answers 202 at once.
+2. **Worker** ([tasks.py](../backend/app/workers/tasks.py)) claims the job atomically, then runs and saves each stage, so progress is real and survives restarts.
+3. **AI provider** ([provider.py](../backend/app/services/ai/provider.py)) asks the model for JSON matching a Pydantic schema, validates it, and retries bounded failures. A video is analysed as a storyboard of four frames from across the clip.
+4. **Renderer** produces a designed poster (image formats), a promo video built from a still (blurred, colour-tinted backdrop, product card, close-up shots, animated captions, end card), or the uploaded clip reframed to the target aspect with overlays and its own audio. On 9:16 video, text stays clear of the areas the apps cover with their own controls.
+5. **UI** ([page.tsx](../frontend/src/app/page.tsx)) polls the job and shows stages, the result, downloads, and safe errors with a retry option.
 
-## Key decisions
+## Key decisions and trade-offs
 
-- **One format registry as the source of truth.** Dimensions, output type, and text limits live in [platforms.py](../backend/app/core/platforms.py). The renderer, validator, prompts, post text, and UI all read from it, so adding a format means adding one data entry and a test.
-- **Real rendering, AI for understanding and copy.** Hosted text-to-video is costly, slow, and unreliable for product accuracy. Rendering from the user's own media keeps the product faithful and makes the output exactly platform-sized every time.
-- **Local, free AI (Ollama) instead of a paid API.** No keys or spending are needed, and product media never leaves the machine. The trade-off is speed: about 20–35 s per job on a 16 GB Mac.
-- **Structured output with validation.** The model must return schema-valid JSON, and invalid or cut-off answers are retried. Live testing found that the model sometimes padded its answer with whitespace until it hit the length limit. Reordering the schema fields, capping tokens per step, and retrying fixed this; details are in implementation notes, Phase 10.
-- **Background jobs with database state.** Rendering takes seconds to minutes, so it runs outside the HTTP request. Atomic claims and per-attempt IDs stop duplicate or stale workers from overwriting results, and stuck jobs expire and can be retried.
-- **Results are private without needing accounts.** Creating a job sets a random `HttpOnly` cookie, and the job stores only its hash. Every read, preview, download, and retry must present that cookie, otherwise the API answers 404, so a leaked link reveals nothing. A cookie (not a header) is used because `<video>`/`<img>` tags and download links cannot send custom headers. User accounts remain a next step.
-- **Safety at the edges.** Uploads are checked by size, type, and decoded content, and image metadata is stripped. URL fetching blocks private and internal addresses, pins DNS, and re-validates redirects. Error messages never expose internals.
-- **Honest labeling.** Demo mode is visible, AI copy lists the facts the user should confirm, and prompts forbid invented product claims.
+- **Render from the user's media; use AI for understanding and copy.** Hosted text-to-video is slow, costly, and unreliable at showing the actual product. Rendering from the user's media keeps the product faithful and the output exactly platform-sized. The trade-off is a more template-like look than generative video.
+- **Local AI (Ollama) instead of a paid API.** No keys, no spend, and product media never leaves the server. The trade-off is speed (about 20–60 s per job on a 16 GB Mac) and a host with enough memory; a labelled demo mode covers hosts without one.
+- **One format registry.** Dimensions, output type, and text limits are data. Adding a format is one entry and a test.
+- **Background jobs with the database as the source of truth.** Rendering takes seconds to minutes, so it runs outside the request. Celery carries only job IDs and needs no result backend.
+- **Privacy without accounts.** A random `HttpOnly` cookie marks the creating browser, and jobs store only its hash. Anyone else, even with the link, gets the same 404 as for a missing job. A cookie is used because `<video>`, `<img>`, and download links cannot send custom headers. The trade-off: clearing cookies or switching browsers loses access.
+- **Honest output.** Prompts forbid invented specifications, benefits, and prices; every result lists the facts to confirm before publishing; scraped page text is passed to the model as untrusted data, never as instructions.
 
-## Verification
+## Asynchronous work and failure handling
 
-- 182 backend tests: real FFmpeg renders and decodes, every format's dimensions, upload rejection, URL protection, AI schema handling, job lifecycle, access control, and render quality rules (bold headline size, safe zones, hook card).
-- 42 frontend tests, typecheck, and production build.
-- Live browser run (headless Chrome against live Ollama): 5 generation flows and 13 navigation, error, mobile, and network checks passed.
-- A 34 MB video uploaded through the UI is accepted.
+- **No lost or doubled work:** an atomic claim plus a per-attempt token means duplicate deliveries do nothing and a stale worker cannot overwrite a newer attempt. Outputs are written under attempt-specific names and published atomically only after validation.
+- **Bounded retries:** AI network/server errors are retried at most twice; invalid model output gets one repair attempt; validation errors are not retried. A queue outage becomes a clear failed job, not a silent hang.
+- **Stuck jobs:** jobs that stop updating expire after a timeout (scheduled task and on read) and can be retried by the user.
+- **Safe errors:** users see stable codes and plain messages (for example `URL_BLOCKED` with a suggestion to upload instead); internals and stack traces never reach the client.
+- **Concurrency:** new versions are numbered per family under a unique index, with collisions retried; retention claims a job with a conditional update before deleting its files, so a retry or new version can never start from media being removed.
 
-## Not done (next steps)
+## Persistence
 
-User accounts (results are currently tied to one browser, not a person), cloud deployment and a public URL, Docker images verified (prepared but not built here), object storage (retention is implemented; S3 is not), speech-to-text for video audio, and JavaScript-rendered product pages (JSON-LD in the server HTML is now read). The full list is in [implementation notes](implementation-notes.md#known-limitations-and-next-improvements).
+PostgreSQL holds jobs, stages, results, and errors (SQLite only for the offline local demo). Media lives in per-job folders named by UUID. Ten Alembic migrations, all run by the test suite on SQLite; migration 0009 was also run up and down on PostgreSQL during review. Media is deleted `MEDIA_RETENTION_DAYS` after a job finishes (default 30); the record and caption stay, media requests answer 410 Gone, and the UI shows an expired state. A sweep removes folders left by crashes.
+
+## Security
+
+- **Uploads:** checked by size, MIME type and extension together, decoded content, frame count, and pixel count; images are re-encoded with metadata stripped; logos keep transparency but are redrawn without metadata.
+- **Product URLs (SSRF):** only http/https on default ports; every DNS answer must be public (loopback, private, link-local/cloud-metadata, CGNAT and mapped forms rejected); the connection is pinned to the validated IP with Host/SNI kept; redirects are re-validated; bodies are size- and time-limited.
+- **Media processing:** FFmpeg runs with argument lists, fixed paths, timeouts, and thread limits.
+- **Access:** owner cookie on every job endpoint; `Secure` behind HTTPS; per-process rate limiting on generation requests.
+
+## How it was built and verified
+
+Built with AI coding assistants (Codex, then Claude Code), feature by feature, each change test-first, reviewed, and checked in a real browser. Later features were built by parallel agents against a fixed API contract and then reviewed by a separate agent that had not seen the implementation; those reviews found five defects (all fixed with regression tests) and confirmed no data-loss or access-control issues.
+
+- **182 backend tests:** real FFmpeg renders and full decodes, every format's dimensions, upload and URL attacks, AI schema handling, job lifecycle and races, access control, retention, and rendering rules (headline size, safe zones).
+- **42 frontend tests**, typecheck, and production build. GitHub Actions runs the backend and frontend checks on every push, and the runs on `main` pass.
+- **Live checks** in headless Chrome against live AI for every input type, new versions, retention, and privacy; product-URL extraction checked against real stores.
+
+## Known issues and limitations
+
+- Results belong to a browser, not a person; there are no user accounts.
+- Live AI needs a host with enough memory for the model; on CPU a job takes up to a minute.
+- Product pages that build their content in the browser fall back to their share tags; many large retailers block automated fetches (the user is asked to upload instead).
+- Video understanding uses four frames and ignores speech.
+- Media is on one host's disk; scaling to several hosts needs object storage.
+- Rate limiting is per process, not shared across instances.
+- AI copy can still be wrong; users must review it (the app says so on every result).
+
+## What I would do next, in order
+
+1. **User accounts and saved brand kits.** This turns one-off results into a workspace and removes the per-browser limit. It is the biggest product gap.
+2. **Object storage with signed URLs.** This allows more than one API/worker host and pushes downloads to a CDN.
+3. **Shared rate limits and usage quotas** (Redis), tied to accounts. These are needed before opening the app to the public.
+4. **Speech-to-text for video uploads** (Whisper), so the copy can use what is said in the clip.
+5. **A transactional outbox** between the database and the queue, for stronger delivery guarantees than "fail clearly and let the user retry".
+6. **Product evolution:** scheduling and direct posting to the platforms' APIs, side-by-side comparison of versions, and usage analytics to learn which hooks perform.
