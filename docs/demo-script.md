@@ -1,6 +1,6 @@
 # Walkthrough — target 4 minutes
 
-Record only the application tab, with no personal tabs, credentials, or private product media visible. A captioned recording of the core flows exists at `delivery/walkthrough.mp4` (silent, real-time AI waits). This script is for a narrated version.
+Record only the application tab, with no personal tabs, credentials, or private product media visible. A captioned recording of the current app is at `delivery/walkthrough.mp4` (see `delivery/README.md`). This script is for a narrated version.
 
 1. **0:00–0:30 — Frame the product.** Open Social Studio. Explain the scope: image, video, or product URL in; seven Instagram/TikTok/YouTube formats out. State whether this run uses live Ollama or explicit demo copy. Distinguish AI-written copy from template-based media rendering.
 2. **0:30–1:10 — Create.** Upload `assets/sample-product.png`, pick Instagram → Reel, add a brand name/CTA, and start. Then switch to YouTube to show the format list change (Short, 16:9 Video, Thumbnail) and the dimension summary. If time allows, paste a public product page URL and show the "Read the product page" stage, or upload a short landscape clip for a TikTok video to show reframing with audio.
