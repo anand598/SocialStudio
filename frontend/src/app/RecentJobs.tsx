@@ -12,6 +12,8 @@ type Summary = {
   headline: string | null;
   // 1 for originals; 2+ for "another version" jobs (absent from older APIs).
   variant?: number;
+  // Its media was deleted; the thumbnail would 410 (absent from older APIs).
+  expired?: boolean;
 };
 
 const HISTORY_LIMIT = 12;
@@ -71,7 +73,9 @@ export default function RecentJobs({
                 aria-current={item.id === activeId ? "page" : undefined}
               >
                 <span className="recent-thumb">
-                  {item.status === "completed" ? (
+                  {item.expired ? (
+                    <span className="recent-status expired">Expired</span>
+                  ) : item.status === "completed" ? (
                     <img
                       src={`${API}/api/v1/generations/${item.id}/thumbnail`}
                       alt=""

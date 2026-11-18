@@ -598,6 +598,29 @@ textarea::placeholder {
   background: #173b34;
   box-shadow: 0 10px 30px #183d3618;
 }
+/* Stands in for a preview whose media was deleted after the retention period. */
+.expired-frame {
+  width: 100%;
+  max-width: var(--preview-width, 270px);
+  max-height: 520px;
+  aspect-ratio: var(--preview-ratio, 9 / 16);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  border: 1px dashed #b9c8af;
+  border-radius: 12px;
+  background: #f6f8f1;
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 1.8px;
+}
+.expired-frame span {
+  font-size: 26px;
+  letter-spacing: 0;
+  color: #b9c8af;
+}
 .result-label {
   font-size: 8px;
   letter-spacing: 1.8px;
@@ -607,6 +630,10 @@ textarea::placeholder {
 .download {
   margin: 18px auto 0;
   max-width: 260px;
+}
+.generation-status .retention-note {
+  font-size: 10px;
+  margin-top: 8px;
 }
 .copy-panel {
   margin-top: 24px;

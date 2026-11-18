@@ -59,7 +59,8 @@ def platforms():
             "max_source_video_seconds": settings.max_source_video_seconds,
             "max_music_upload_size_mb": settings.max_music_upload_size_mb,
             "max_music_seconds": settings.max_music_seconds,
-            "max_logo_upload_size_mb": settings.max_logo_upload_size_mb}
+            "max_logo_upload_size_mb": settings.max_logo_upload_size_mb,
+            "media_retention_days": settings.media_retention_days}
 
 
 @router.post("/generations", response_model=JobResponse, status_code=202)
@@ -140,6 +141,15 @@ async def create_generation(
     return job
 
 
+EXPIRED = "This result has expired and its media was deleted. Create a new one."
+
+
+def require_media(job: GenerationJob) -> None:
+    """410 Gone once retention has deleted the job's files (after the owner check, never before)."""
+    if job.purged_at is not None:
+        raise HTTPException(410, EXPIRED)
+
+
 def find_job(job_id: UUID, session: Session, token: str | None) -> GenerationJob:
     expire_stale(session)
     job = session.get(GenerationJob, job_id)
@@ -183,11 +193,12 @@ def enqueue(job: GenerationJob, session: Session) -> None:
 @router.post("/generations/{job_id}/retry", response_model=JobResponse, status_code=202)
 def retry_generation(job_id: UUID, token: str | None = Owner, session: Session = Depends(get_session)):
     job = find_job(job_id, session, token)
+    require_media(job)
     if job.status != "failed":
         raise HTTPException(409, "Only failed generations can be retried.")
     # A conditional update prevents concurrent retries from publishing duplicate work.
     result = session.execute(update(GenerationJob).where(GenerationJob.id == job_id,
-        GenerationJob.status == "failed").values(status="queued", stage="validating", progress=0,
+        GenerationJob.status == "failed", GenerationJob.purged_at.is_(None)).values(status="queued", stage="validating", progress=0,
             error_code=None, error_message=None, completed_at=None, updated_at=datetime.now(timezone.utc)))
     session.commit()
     if not result.rowcount:
@@ -232,6 +243,7 @@ def create_variant(job_id: UUID, response: Response, body: VariantRequest | None
                    token: str | None = Owner, session: Session = Depends(get_session)):
     """Make another version of a finished result from its stored inputs, optionally in another format."""
     source = find_job(job_id, session, token)
+    require_media(source)
     platform, format = (body.platform or None, body.format or None) if body else (None, None)
     if (platform is None) != (format is None):
         raise HTTPException(422, "Choose both a platform and a format, or neither.")
@@ -294,6 +306,7 @@ def get_content(job_id: UUID, token: str | None = Owner, session: Session = Depe
 
 
 def completed_asset(job: GenerationJob, name: Literal["output", "thumbnail"]) -> Path:
+    require_media(job)
     if job.status != "completed":
         raise HTTPException(409, "The generation is not complete yet.")
     stored = job.output_file_path if name == "output" else job.thumbnail_file_path

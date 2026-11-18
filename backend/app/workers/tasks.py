@@ -10,6 +10,7 @@ from app.services.ai.provider import GenerationError, get_provider
 from app.core.platforms import get_format
 from app.services.ingest.url import ingest_url
 from app.services.media.renderer import render_output
+from app.services.retention import purge_expired, purge_orphans
 from app.services.storage.local import job_directory
 from app.workers.celery_app import celery_app
 
@@ -42,6 +43,12 @@ def expire_stale(session) -> int:
 def recover_stale():
     with SessionLocal() as session:
         return expire_stale(session)
+
+
+@celery_app.task(name="social.purge_expired")
+def purge_expired_media():
+    with SessionLocal() as session:
+        return {"jobs": purge_expired(session), "orphans": purge_orphans(session)}
 
 
 @celery_app.task(bind=True, name="social.generate", max_retries=2)

@@ -87,14 +87,17 @@ const job = {
 function mockFetch(
   result: Omit<typeof job, "error_message"> & {
     error_message: string | null;
+    expired?: boolean;
+    variant?: number;
   } = job,
+  configOverrides: Record<string, unknown> = {},
 ) {
   return vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
     const url = String(input);
     return new Response(
       JSON.stringify(
         url.endsWith("/config/platforms")
-          ? config
+          ? { ...config, ...configOverrides }
           : url.includes("/generations?")
             ? { items: [] }
             : result,
@@ -882,5 +885,122 @@ describe("another version", () => {
     render(<Home />);
     await screen.findByText(`Generation ${id}`);
     expect(screen.queryByText(/^Version \d/)).not.toBeInTheDocument();
+  });
+});
+
+describe("expired results", () => {
+  const keptBelow =
+    "The caption is still below — create a new one any time.";
+
+  it("replaces the preview, download and new-version form with a calm expired state", async () => {
+    window.history.replaceState(null, "", `#job=${id}`);
+    mockFetch({ ...job, variant: 2, expired: true }, { media_retention_days: 30 });
+    render(<Home />);
+    expect(
+      await screen.findByRole("heading", { name: "This result has expired" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        `Files are deleted after 30 days to protect your media. ${keptBelow}`,
+      ),
+    ).toBeInTheDocument();
+    const spotlight = screen.getByRole("region", { name: "The spotlight" });
+    expect(spotlight.querySelector("video, img")).toBeNull();
+    expect(screen.queryByLabelText("Generated Instagram Reel")).toBeNull();
+    expect(screen.queryByRole("link", { name: /Download/ })).toBeNull();
+    expect(screen.queryByText("Make another version")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /Create a new .* version/ }),
+    ).toBeNull();
+    expect(screen.queryByText(/Kept for/)).toBeNull();
+    // What is still stored keeps working.
+    expect(screen.getByText("Version 2")).toBeInTheDocument();
+    expect(screen.getByLabelText("Caption & hashtags")).toHaveValue(
+      "Demo caption\n\nShop\n\n#Demo",
+    );
+    expect(
+      screen.getByRole("button", { name: "Copy caption" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Download text/ }),
+    ).toBeInTheDocument();
+  });
+
+  it.each([
+    ["missing", {}],
+    ["0", { media_retention_days: 0 }],
+  ])(
+    "leaves out the retention period when it is %s",
+    async (_label, overrides) => {
+      window.history.replaceState(null, "", `#job=${id}`);
+      mockFetch({ ...job, expired: true }, overrides);
+      render(<Home />);
+      expect(
+        await screen.findByText(
+          `Files are deleted to protect your media. ${keptBelow}`,
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/after \d+ days?/)).toBeNull();
+    },
+  );
+
+  it("hides retry for an expired failed job and explains why", async () => {
+    window.history.replaceState(null, "", `#job=${id}`);
+    mockFetch(
+      {
+        ...job,
+        status: "failed",
+        stage: "failed",
+        error_message: "Check the worker and retry.",
+        expired: true,
+      },
+      { media_retention_days: 7 },
+    );
+    render(<Home />);
+    expect(
+      await screen.findByRole("heading", { name: "This result has expired" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Files are deleted after 7 days to protect your media\./),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Retry/ })).toBeNull();
+  });
+
+  it("notes how long files are kept next to the download", async () => {
+    window.history.replaceState(null, "", `#job=${id}`);
+    mockFetch({ ...job, expired: false }, { media_retention_days: 30 });
+    render(<Home />);
+    expect(
+      await screen.findByRole("link", { name: /Download Instagram Reel/ }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Kept for 30 days")).toBeInTheDocument();
+    expect(screen.queryByText("This result has expired")).toBeNull();
+  });
+
+  it.each([
+    ["missing", {}],
+    ["0", { media_retention_days: 0 }],
+  ])(
+    "has no retention note when the period is %s",
+    async (_label, overrides) => {
+      window.history.replaceState(null, "", `#job=${id}`);
+      mockFetch(job, overrides);
+      render(<Home />);
+      expect(
+        await screen.findByRole("link", { name: /Download Instagram Reel/ }),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/Kept for/)).toBeNull();
+    },
+  );
+
+  it("has no retention note while a job is still running", async () => {
+    window.history.replaceState(null, "", `#job=${id}`);
+    mockFetch(
+      { ...job, status: "processing", stage: "rendering" },
+      { media_retention_days: 30 },
+    );
+    render(<Home />);
+    await screen.findByText("Good stories take a moment. We’ll keep you posted.");
+    expect(screen.queryByText(/Kept for/)).toBeNull();
   });
 });

@@ -54,6 +54,8 @@ class GenerationJob(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Set when retention deleted the job's media; the row and generated text are kept.
+    purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     @property
     def output_format(self):
@@ -62,6 +64,10 @@ class GenerationJob(Base):
     @property
     def has_music(self) -> bool:
         return bool(self.music_path)
+
+    @property
+    def expired(self) -> bool:
+        return self.purged_at is not None
 
     @property
     def has_logo(self) -> bool:

@@ -8,7 +8,7 @@ A single Linux host can run frontend, API, worker, scheduler, PostgreSQL, and Re
 
 The local Compose configuration binds ports to loopback. For public access, place an HTTPS reverse proxy in front of frontend/API, set a specific CORS origin, and build the frontend with the browser-accessible API URL. Do not expose PostgreSQL, Redis, or Ollama publicly. Set strong database credentials through environment/secrets; the example password is development-only.
 
-Add an ingress upload/body limit and shared request/usage limits. Restrict reviewer access or add authentication before accepting private media. Job results are bound to the creating browser by an `HttpOnly` owner cookie; set `COOKIE_SECURE=true` behind HTTPS (the public override does) so it is never sent in clear text. Establish a storage retention policy, backups, log collection, health monitoring, and worker supervision. Only one scheduler should run.
+Add an ingress upload/body limit and shared request/usage limits. Restrict reviewer access or add authentication before accepting private media. Job results are bound to the creating browser by an `HttpOnly` owner cookie; set `COOKIE_SECURE=true` behind HTTPS (the public override does) so it is never sent in clear text. Establish backups, log collection, health monitoring, and worker supervision. Only one scheduler should run.
 
 ## Verification before publishing
 

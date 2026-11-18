@@ -20,6 +20,7 @@ class JobResponse(BaseModel):
     variant: int
     has_music: bool
     has_logo: bool
+    expired: bool
     generation_mode: str
     created_at: datetime
     updated_at: datetime
@@ -43,6 +44,7 @@ class JobSummary(BaseModel):
     format: str
     output_kind: Literal["video", "image"]
     headline: str | None
+    expired: bool
     variant: int
     created_at: datetime
 

@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     max_logo_upload_size_mb: int = Field(default=2, ge=0)
     url_fetch_timeout_seconds: int = Field(default=10, gt=0)
     url_max_redirects: int = Field(default=3, ge=0, le=10)
+    # Uploaded and generated media is deleted this many days after a job finishes; 0 keeps it forever.
+    media_retention_days: int = Field(default=30, ge=0)
     # Mark the job-owner cookie Secure; enable whenever the app is served over HTTPS.
     cookie_secure: bool = False
 

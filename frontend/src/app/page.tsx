@@ -33,6 +33,8 @@ type Config = {
   max_music_upload_size_mb?: number;
   max_music_seconds?: number;
   max_logo_upload_size_mb?: number;
+  // Days before stored media is deleted; 0 or absent means it is kept indefinitely.
+  media_retention_days?: number;
 };
 type Analysis = {
   product_name: string | null;
@@ -64,6 +66,8 @@ type Job = {
   // Set on jobs made with "Make another version"; originals are null / 1.
   parent_id?: string | null;
   variant?: number;
+  // Its media was deleted after the retention period; the text is kept. Absent from older APIs.
+  expired?: boolean;
   generation_mode: string;
   error_message: string | null;
   product_analysis: Analysis | null;
@@ -122,6 +126,9 @@ function isValidURL(value: string) {
 const UNAVAILABLE_JOB =
   "This result isn't available here. Results open only in the browser that created them — create a new one below.";
 
+function days(count: number) {
+  return `${count} ${count === 1 ? "day" : "days"}`;
+}
 
 export default function Home() {
   const [config, setConfig] = useState<Config | null>(null);
@@ -209,6 +216,9 @@ export default function Home() {
   const musicApplies = selectedFormat?.kind === "video";
   const withMusic = musicApplies && music !== null;
   const hasInput = inputType === "url" ? isValidURL(productURL) : file !== null;
+  // Expired jobs keep their text, but their preview, download, retry and new versions are gone.
+  const expired = job?.expired === true;
+  const retentionDays = Math.max(0, config?.media_retention_days ?? 0);
 
   const loadConfig = useCallback(() => {
     setConfigError("");
@@ -414,6 +424,13 @@ export default function Home() {
       `${content.caption}\n\n${content.call_to_action}\n\n${content.hashtags.join(" ")}`)
     : "";
   const resultLabel = resultFormat?.label ?? "creative";
+  const expiredNote = [
+    `Files are deleted${retentionDays ? ` after ${days(retentionDays)}` : ""} to protect your media.`,
+    // Only finished jobs show the caption panel.
+    job?.status === "completed" && content
+      ? "The caption is still below — create a new one any time."
+      : "Create a new one any time.",
+  ].join(" ");
   async function copyCaption() {
     try {
       await navigator.clipboard.writeText(caption);
@@ -959,7 +976,12 @@ export default function Home() {
                           : "290px",
                   }}
                 >
-                  {resultKind === "image" ? (
+                  {expired ? (
+                    <div className="expired-frame" aria-hidden="true">
+                      <span>✳</span>
+                      MEDIA DELETED
+                    </div>
+                  ) : resultKind === "image" ? (
                     <img
                       key={job.id}
                       src={`${assetURL}/preview`}
@@ -1057,7 +1079,13 @@ export default function Home() {
                     <p>Good stories take a moment. We’ll keep you posted.</p>
                   </>
                 )}
-                {job?.status === "failed" && (
+                {expired && (
+                  <>
+                    <h3>This result has expired</h3>
+                    <p>{expiredNote}</p>
+                  </>
+                )}
+                {job?.status === "failed" && !expired && (
                   <>
                     <h3>Let’s give that another take.</h3>
                     <p>{job.error_message}</p>
@@ -1071,7 +1099,7 @@ export default function Home() {
                     </button>
                   </>
                 )}
-                {job?.status === "completed" && (
+                {job?.status === "completed" && !expired && (
                   <>
                     <h3>
                       {resultKind === "image"
@@ -1096,6 +1124,11 @@ export default function Home() {
                     >
                       Download {resultLabel} <span>↓</span>
                     </a>
+                    {retentionDays > 0 && (
+                      <p className="retention-note">
+                        Kept for {days(retentionDays)}
+                      </p>
+                    )}
                   </>
                 )}
                 {pollError && (
@@ -1104,7 +1137,7 @@ export default function Home() {
                   </p>
                 )}
               </div>
-              {job?.status === "completed" && variantTarget && (
+              {job?.status === "completed" && !expired && variantTarget && (
                 <form
                   className="variant-form"
                   onSubmit={createVariant}

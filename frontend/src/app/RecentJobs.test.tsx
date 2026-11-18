@@ -92,6 +92,32 @@ describe("recent creatives", () => {
     expect(links[2]).toHaveTextContent("Failed");
   });
 
+  it("marks expired results instead of loading their deleted thumbnails", async () => {
+    mockHistory({
+      items: [
+        { ...items[0], expired: true },
+        { ...items[2], expired: true },
+        { ...items[0], id: running, expired: false },
+      ],
+    });
+    render(<RecentJobs activeId="" refreshKey="" labelFor={labelFor} />);
+    const links = within(
+      await screen.findByRole("list", { name: "Recent creatives" }),
+    ).getAllByRole("link");
+    expect(links[0].querySelector("img")).toBeNull();
+    expect(links[0]).toHaveTextContent("Expired");
+    expect(links[0]).not.toHaveTextContent("Ready");
+    // Still opens the job: its caption is kept.
+    expect(links[0]).toHaveAttribute("href", `#job=${done}`);
+    expect(links[1].querySelector("img")).toBeNull();
+    expect(links[1]).toHaveTextContent("Expired");
+    expect(links[1]).not.toHaveTextContent("Failed");
+    expect(links[2].querySelector("img")).toHaveAttribute(
+      "src",
+      expect.stringContaining(`/api/v1/generations/${running}/thumbnail`),
+    );
+  });
+
   it("badges later versions of a creative", async () => {
     mockHistory({
       items: [{ ...items[0], variant: 2 }, { ...items[1], variant: 1 }],

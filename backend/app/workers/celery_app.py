@@ -1,5 +1,6 @@
 from pathlib import Path
 from celery import Celery
+from celery.signals import worker_ready
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -9,7 +10,8 @@ celery_app.conf.update(task_ignore_result=True, task_acks_late=True,
     broker_connection_retry_on_startup=True,
     broker_connection_timeout=3, broker_transport_options={"visibility_timeout": settings.stale_job_seconds},
     task_soft_time_limit=settings.stale_job_seconds - 30, task_time_limit=settings.stale_job_seconds,
-    beat_schedule={"expire-abandoned-jobs": {"task": "social.recover_stale", "schedule": 60.0}})
+    beat_schedule={"expire-abandoned-jobs": {"task": "social.recover_stale", "schedule": 60.0},
+                   "purge-expired-media": {"task": "social.purge_expired", "schedule": 3600.0}})
 
 # Explicit offline development transport; normal deployments use Redis.
 if settings.celery_broker_url == "filesystem://":
@@ -19,3 +21,12 @@ if settings.celery_broker_url == "filesystem://":
         "data_folder_in": str(queue), "data_folder_out": str(queue),
         "control_folder": str(queue / "control"), "store_processed": False,
     }
+
+
+@worker_ready.connect
+def purge_when_worker_starts(sender=None, **kwargs):
+    """Interval schedules first fire one interval after the scheduler starts, so frequent restarts
+    could postpone retention indefinitely; purge once whenever a worker comes up (every deploy).
+    Hooked to the worker, not the scheduler: an embedded scheduler on macOS runs in a spawned
+    process that never imports this module, so its signal handlers would not be connected."""
+    celery_app.send_task("social.purge_expired")

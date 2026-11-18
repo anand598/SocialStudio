@@ -26,7 +26,7 @@ cd "$repo_dir/backend"
 .venv/bin/alembic upgrade head
 .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port "$demo_api_port" >"$runtime_dir/logs/api.log" 2>&1 &
 api_pid=$!
-.venv/bin/celery -A app.workers.celery_app:celery_app worker --pool=solo --concurrency=1 --loglevel=INFO --without-gossip --without-mingle --without-heartbeat >"$runtime_dir/logs/worker.log" 2>&1 &
+.venv/bin/celery -A app.workers.celery_app:celery_app worker --pool=solo --concurrency=1 --loglevel=INFO --without-gossip --without-mingle --without-heartbeat -B --schedule="$runtime_dir/celerybeat-schedule" >"$runtime_dir/logs/worker.log" 2>&1 &
 worker_pid=$!
 (cd "$repo_dir/frontend" && exec node node_modules/next/dist/bin/next dev --hostname 127.0.0.1 --port "$demo_ui_port") >"$runtime_dir/logs/frontend.log" 2>&1 &
 ui_pid=$!

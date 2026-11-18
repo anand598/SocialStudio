@@ -13,6 +13,11 @@ services:
       LOCAL_STORAGE_PATH: /storage
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      # Containers do not read .env; settings must be passed here to take effect.
+      MEDIA_RETENTION_DAYS: ${MEDIA_RETENTION_DAYS:-30}
+      MAX_MUSIC_UPLOAD_SIZE_MB: ${MAX_MUSIC_UPLOAD_SIZE_MB:-20}
+      MAX_MUSIC_SECONDS: ${MAX_MUSIC_SECONDS:-600}
+      MAX_LOGO_UPLOAD_SIZE_MB: ${MAX_LOGO_UPLOAD_SIZE_MB:-2}
     command: ["alembic", "upgrade", "head"]
     depends_on:
       postgres:
