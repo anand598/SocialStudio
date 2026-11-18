@@ -6,11 +6,14 @@ import shutil
 from pathlib import Path
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from functools import lru_cache
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
@@ -67,11 +70,20 @@ def health() -> HealthResponse:
     return HealthResponse(status="ok")
 
 
+@lru_cache
+def latest_migration() -> str:
+    """Head revision of the shipped migration scripts, so readiness never goes stale."""
+    backend = Path(__file__).resolve().parents[1]
+    config = Config(str(backend / "alembic.ini"))
+    config.set_main_option("script_location", str(backend / "alembic"))
+    return ScriptDirectory.from_config(config).get_current_head()
+
+
 def check_database() -> str:
     try:
         with engine.connect() as conn:
             revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar()
-            if revision != "0006":
+            if revision != latest_migration():
                 return "migration_required"
         return "ok"
     except Exception:
