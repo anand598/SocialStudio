@@ -20,6 +20,8 @@ Turn a product **image, video, or product-page URL** into platform-ready content
 | Video (MP4/MOV/WebM, ≤ 180 s) | ffprobe-validated. Four frames sampled across the clip (10/37/63/90 %) form a numbered 2×2 storyboard that the vision model analyzes in time order; audio is not analyzed. Video formats **reframe your clip** onto the target aspect over a blurred fill, trimmed to 30 s, with hook/CTA/brand overlays and original audio kept. Image formats use the keyframe. |
 | Product URL | Fetched by the worker with SSRF protection. The page's `og:image`/`twitter:image` becomes the product image; title/description feed the copy as untrusted data. Direct image URLs also work. |
 
+**Brand kit (optional, every input and format):** a brand colour fills the CTA button and accent bar exactly and tints the backdrop with its hue; the button label switches between white and dark ink by WCAG contrast, and a brand colour too dark to read on the backdrop falls back to white for the brand name and accent bar. A logo (transparent PNG recommended) is trimmed to its visible mark, stored as a clean PNG, and drawn where the brand name would be. Without either, the palette comes from the product photo.
+
 The platform registry (`backend/app/core/platforms.py`) is the single source of truth for dimensions, output kind, caption length, and hashtag limits (for example, YouTube ≤ 3 hashtags plus a title; TikTok ≤ 5). Rendered output is verified against it before publication.
 
 **Two explicit modes:** `GENERATION_MODE=ollama` uses local vision/text inference. `GENERATION_MODE=demo` uses deterministic generic copy and no AI analysis. Both render real media from the user's image, video, or product-page image. The UI and result metadata label demo mode. Ollama does not synthesize video; Pillow composes every frame from the user's media and FFmpeg encodes it.
@@ -127,6 +129,7 @@ See [.env.example](.env.example). Defaults are development-only, including the P
 | `MAX_UPLOAD_SIZE_MB` | Image upload limit, default 15; request-size and decoded image limits also apply |
 | `MAX_VIDEO_UPLOAD_SIZE_MB`, `MAX_SOURCE_VIDEO_SECONDS` | Video upload limits, default 100 MB / 180 s |
 | `MAX_MUSIC_UPLOAD_SIZE_MB`, `MAX_MUSIC_SECONDS` | Optional background music (MP3/M4A/WAV) for video formats, default 20 MB / 600 s |
+| `MAX_LOGO_UPLOAD_SIZE_MB` | Optional brand logo (PNG/JPEG/WebP) upload limit, default 2 MB |
 | `URL_FETCH_TIMEOUT_SECONDS`, `URL_MAX_REDIRECTS` | Product URL fetch bounds, default 10 s / 3 redirects |
 | `FFMPEG_TIMEOUT_SECONDS` | Per subprocess timeout, default 180 |
 | `STALE_JOB_SECONDS` | Abandoned job expiry, default 900 |
@@ -145,7 +148,7 @@ All routes use `/api/v1`:
 | GET | `/health` | API liveness |
 | GET | `/ready` | Database migration, broker, model presence, and media tool checks |
 | GET | `/config/platforms` | Supported format, explicit inference mode, upload limit |
-| POST | `/generations` | Multipart `input_type` (`image`/`video`/`url`), `file` or `source_url`, `platform`, `format`, optional brand context, optional `music` (video formats only); 202 |
+| POST | `/generations` | Multipart `input_type` (`image`/`video`/`url`), `file` or `source_url`, `platform`, `format`, optional brand context (`brand_name`, `brand_description`, `call_to_action`, `brand_color` as `#RRGGBB`), optional `logo` (PNG/JPEG/WebP), optional `music` (video formats only); 202 |
 | GET | `/generations?limit=20` | This browser's own jobs, newest first (owner cookie; empty without one); `limit` 1–50 |
 | GET | `/generations/{id}` | Persisted state, generated copy, safe errors |
 | POST | `/generations/{id}/retry` | Retry a failed job; 202 |

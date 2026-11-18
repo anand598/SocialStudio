@@ -87,7 +87,7 @@ After the fixes the live browser suite passed: image → Reel 34 s and 4:5 18 s,
 4. Add a transactional outbox for atomic database-to-broker delivery; current publish failure plus expiry is recoverable but not an exactly-once delivery guarantee.
 5. Local media needs shared storage on one host. Add S3-compatible storage/signed URLs before multi-host scaling. Failed/retried artifacts currently have no automatic retention cleanup.
 6. Review AI claims manually; schema validation and prompts cannot guarantee factual accuracy. Non-Latin font coverage depends on the configured font. No copyright music is bundled.
-7. Per-user brand kits, multi-variant generation, and generative image/video synthesis are pending. History is per browser (owner cookie), not per account.
+7. Saved (reusable) brand kits, multi-variant generation, and generative image/video synthesis are pending. History is per browser (owner cookie), not per account.
 8. URL ingestion depends on Open Graph/Twitter image tags; many large retailers block automated fetches (reported as `URL_BLOCKED` with an upload suggestion). JSON-LD product data and headless rendering for JavaScript-only pages are not implemented.
 9. Video understanding samples four frames and ignores audio; long clips with many products or spoken claims need denser sampling and speech-to-text (e.g. Whisper) before copywriting.
 10. Source video is re-encoded by FFmpeg on the worker. Production handling of hostile media should add sandboxing (seccomp/gVisor or an isolated transcoding service) and a per-job CPU budget.
@@ -144,3 +144,15 @@ Before this, a past result could be reopened only from its saved `#job=` link. `
 The UI shows a "Recent creatives" strip under the workspace: thumbnails for finished results, status for running or failed ones, and the open result outlined. Each card is a plain `#job=` link, so it reuses the existing hash-restore and polling path rather than a second loading mechanism. The list refreshes when the open job is created or changes state. History is non-critical: if it is empty or fails to load, the section is hidden and creation is unaffected. The API helpers moved from `page.tsx` to `src/lib/api.ts` so the component shares them.
 
 Tests: 6 backend (ordering, isolation between browsers, no-cookie behaviour, limit bounds, headline, omitted fields) and 6 frontend (component behaviour plus opening a past result from the page). Verified live in demo mode through the Next.js proxy with headless Chrome at 1280 px and 390 px. Totals: 115 backend and 20 frontend tests.
+
+## Phase 15 — brand colour and logo — 2026-11-18
+
+The form gained two optional "Make it yours" fields that apply to every input and format.
+
+**Brand colour.** `brand_color` must be `#RRGGBB` (validated by the API, stored upper-case in `brand_context`). The renderer uses the exact colour for the CTA button and accent bar and a dark shade of its hue for the backdrop tint, replacing the photo-derived palette. Text on the button is white or dark ink, whichever has the higher WCAG contrast; if the colour reads poorly on the dark backdrop (contrast below 3:1, e.g. navy), the brand name and accent bar fall back to white. Reframed source videos use the colour for their CTA box.
+
+**Logo.** An optional PNG/JPEG/WebP upload (2 MB by default, `MAX_LOGO_UPLOAD_SIZE_MB`). The API checks MIME/extension agreement before storing anything, then decodes it with the same hardened path as product images (format allow-list, single frame, decompression-bomb guard, EXIF orientation) but keeps transparency. It is trimmed to its visible pixels, capped at 800 px, re-drawn onto a fresh image (no metadata or embedded payloads), and saved as `logo.png` in the job directory (migration `0008` adds `logo_path`; responses expose `has_logo`). Fully transparent or tiny logos are refused, and any failure removes the job directory. The logo takes the brand name's position at a fixed cap height (7 % of the short side, at most 40 % of the width) on posters, promo videos, and reframed videos; on 9:16 it stays below the top app UI.
+
+Why replace the brand name rather than show both: the top-left slot is sized for one mark, and logos usually contain the name already.
+
+Tests: 14 backend (validation and normalisation, transparency kept and trimmed, rejection and cleanup, contrast choice, button colour, backdrop hue, readable dark brands, logo placement and aspect, video overlays, and two end-to-end worker runs: poster and reframed TikTok) and 3 frontend (sent when chosen, validated before upload, not sent when absent or removed). Verified live in demo mode: an orange brand colour and a transparent logo on an Instagram square post and a Reel, plus the form at 1280 px and 390 px. A generic `input` rule had stretched the colour picker to full width; it now excludes colour inputs. Totals: 129 backend and 23 frontend tests.

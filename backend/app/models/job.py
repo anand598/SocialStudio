@@ -27,6 +27,8 @@ class GenerationJob(Base):
     source_url: Mapped[str | None] = mapped_column(Text)
     # Optional user-supplied background music for video outputs.
     music_path: Mapped[str | None] = mapped_column(Text)
+    # Optional brand logo: trimmed RGBA PNG stored in the job directory.
+    logo_path: Mapped[str | None] = mapped_column(Text)
     # Untrusted page metadata extracted from a product URL (title, description, site name).
     source_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     # SHA-256 of the creating browser's owner cookie; only that browser may read the job.
@@ -53,6 +55,10 @@ class GenerationJob(Base):
     @property
     def has_music(self) -> bool:
         return bool(self.music_path)
+
+    @property
+    def has_logo(self) -> bool:
+        return bool(self.logo_path)
 
     @property
     def output_kind(self) -> str:

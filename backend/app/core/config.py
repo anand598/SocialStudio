@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     # Optional background music for video outputs (user-supplied; they must hold the rights).
     max_music_upload_size_mb: int = Field(default=20, ge=0)
     max_music_seconds: int = Field(default=600, gt=0)
+    # Optional brand logo (PNG/JPEG/WebP), drawn where the brand name would be.
+    max_logo_upload_size_mb: int = Field(default=2, ge=0)
     url_fetch_timeout_seconds: int = Field(default=10, gt=0)
     url_max_redirects: int = Field(default=3, ge=0, le=10)
     # Mark the job-owner cookie Secure; enable whenever the app is served over HTTPS.

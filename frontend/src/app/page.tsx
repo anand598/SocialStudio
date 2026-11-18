@@ -32,6 +32,7 @@ type Config = {
   max_source_video_seconds?: number;
   max_music_upload_size_mb?: number;
   max_music_seconds?: number;
+  max_logo_upload_size_mb?: number;
 };
 type Analysis = {
   product_name: string | null;
@@ -133,6 +134,10 @@ export default function Home() {
   const [cta, setCta] = useState("Explore the collection");
   const [music, setMusic] = useState<File | null>(null);
   const musicInput = useRef<HTMLInputElement>(null);
+  // "" means no brand colour: the palette then comes from the product photo.
+  const [brandColor, setBrandColor] = useState("");
+  const [logo, setLogo] = useState<File | null>(null);
+  const logoInput = useRef<HTMLInputElement>(null);
   const [job, setJob] = useState<Job | null>(null);
   const [jobID, setJobID] = useState("");
   const [error, setError] = useState("");
@@ -162,6 +167,7 @@ export default function Home() {
   const imageLimit = config?.max_upload_size_mb ?? 15;
   const videoLimit = config?.max_video_upload_size_mb ?? 100;
   const musicLimit = config?.max_music_upload_size_mb ?? 20;
+  const logoLimit = config?.max_logo_upload_size_mb ?? 2;
   // Music only applies to video outputs; it is kept if the user switches back to a video format.
   const musicApplies = selectedFormat?.kind === "video";
   const withMusic = musicApplies && music !== null;
@@ -285,6 +291,25 @@ export default function Home() {
     setMusic(candidate);
   }
 
+  function selectLogo(candidate?: File) {
+    setError("");
+    if (!candidate) return;
+    if (!IMAGE_TYPES.includes(candidate.type)) {
+      setError("Choose a PNG, JPEG, or WebP logo.");
+      return;
+    }
+    if (candidate.size > logoLimit * 1024 * 1024) {
+      setError(`Choose a logo smaller than ${logoLimit} MB.`);
+      return;
+    }
+    setLogo(candidate);
+  }
+
+  function removeLogo() {
+    setLogo(null);
+    if (logoInput.current) logoInput.current.value = "";
+  }
+
   function removeMusic() {
     setMusic(null);
     if (musicInput.current) musicInput.current.value = "";
@@ -305,6 +330,8 @@ export default function Home() {
     body.set("brand_description", description);
     body.set("call_to_action", cta);
     if (withMusic && music) body.set("music", music);
+    if (brandColor) body.set("brand_color", brandColor.toUpperCase());
+    if (logo) body.set("logo", logo);
     try {
       const next = await request<Job>("/api/v1/generations", {
         method: "POST",
@@ -673,6 +700,69 @@ export default function Home() {
               placeholder="Explore the collection"
               disabled={busy}
             />
+            <label className="field-label" htmlFor="brand-color">
+              Brand colour <span>Optional · button and backdrop tint</span>
+            </label>
+            <div className="music-field">
+              <input
+                id="brand-color"
+                type="color"
+                className="color-input"
+                aria-label="Brand colour"
+                value={brandColor || "#183d36"}
+                onChange={(e) => setBrandColor(e.target.value)}
+                disabled={busy}
+              />
+              <span className="color-value">
+                {brandColor ? brandColor.toUpperCase() : "From your product photo"}
+              </span>
+              {brandColor && (
+                <span className="music-chosen">
+                  <button
+                    type="button"
+                    onClick={() => setBrandColor("")}
+                    disabled={busy}
+                    aria-label="Remove brand colour"
+                  >
+                    Remove
+                  </button>
+                </span>
+              )}
+            </div>
+            <label className="field-label" htmlFor="logo">
+              Logo <span>Optional · PNG, JPEG, WebP up to {logoLimit} MB</span>
+            </label>
+            <div className="music-field">
+              <input
+                id="logo"
+                ref={logoInput}
+                type="file"
+                accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
+                onChange={(e) => selectLogo(e.target.files?.[0])}
+                disabled={busy}
+                className="music-input"
+              />
+              <label htmlFor="logo" className="music-button" aria-hidden="true">
+                {logo ? "Change logo" : "＋ Add a logo"}
+              </label>
+              {logo && (
+                <span className="music-chosen">
+                  <span>{logo.name}</span>
+                  <button
+                    type="button"
+                    onClick={removeLogo}
+                    disabled={busy}
+                    aria-label="Remove logo"
+                  >
+                    Remove
+                  </button>
+                </span>
+              )}
+            </div>
+            <p className="field-hint">
+              A transparent PNG works best. It replaces the brand name on the
+              creative.
+            </p>
             {musicApplies && (
               <>
                 <label className="field-label" htmlFor="music">

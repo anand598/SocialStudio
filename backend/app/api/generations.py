@@ -20,8 +20,8 @@ from app.db.session import get_session
 from app.models.job import GenerationJob
 from app.schemas.jobs import JobHistory, JobResponse
 from app.services.ingest.url import UrlRejected, check_url
-from app.services.storage.local import (check_music_type, create_job_directory, job_directory, store_image,
-                                        store_music, store_video)
+from app.services.storage.local import (check_logo_type, check_music_type, create_job_directory, job_directory,
+                                        store_image, store_logo, store_music, store_video)
 from app.workers.tasks import expire_stale, generate
 
 router = APIRouter(prefix="/api/v1")
@@ -57,7 +57,8 @@ def platforms():
             "max_video_upload_size_mb": settings.max_video_upload_size_mb,
             "max_source_video_seconds": settings.max_source_video_seconds,
             "max_music_upload_size_mb": settings.max_music_upload_size_mb,
-            "max_music_seconds": settings.max_music_seconds}
+            "max_music_seconds": settings.max_music_seconds,
+            "max_logo_upload_size_mb": settings.max_logo_upload_size_mb}
 
 
 @router.post("/generations", response_model=JobResponse, status_code=202)
@@ -67,10 +68,12 @@ async def create_generation(
     input_type: Literal["image", "video", "url"] = Form("image"),
     file: UploadFile | None = File(None),
     music: UploadFile | None = File(None),
+    logo: UploadFile | None = File(None),
     source_url: str = Form("", max_length=2048),
     brand_name: str = Form("", max_length=80),
     brand_description: str = Form("", max_length=500),
     call_to_action: str = Form("Explore the collection", max_length=100),
+    brand_color: str = Form("", pattern=r"^(#[0-9A-Fa-f]{6})?$"),
     token: str | None = Depends(owner_token),
     session: Session = Depends(get_session),
 ):
@@ -81,10 +84,12 @@ async def create_generation(
         await music.close()
         raise HTTPException(422, "Background music applies to video formats only.")
     job_id = uuid4()
-    still = media = url = music_path = None
+    still = media = url = music_path = logo_path = None
     try:
         if music is not None:
             check_music_type(music)
+        if logo is not None:
+            check_logo_type(logo)
         if input_type == "url":
             if file is not None:
                 raise HTTPException(422, "Send either a product URL or a file, not both.")
@@ -100,22 +105,25 @@ async def create_generation(
             media, still = await store_video(file, job_id)
         else:
             still = await store_image(file, job_id)
-        if music is not None:
-            try:
+        try:
+            if music is not None:
                 music_path = await store_music(music, job_directory(job_id))
-            except HTTPException:
-                shutil.rmtree(job_directory(job_id), ignore_errors=True)
-                raise
+            if logo is not None:
+                logo_path = await store_logo(logo, job_directory(job_id))
+        except HTTPException:
+            shutil.rmtree(job_directory(job_id), ignore_errors=True)
+            raise
     finally:
-        for upload in (file, music):
+        for upload in (file, music, logo):
             if upload is not None:
                 await upload.close()
     token = token or secrets.token_urlsafe(32)
     job = GenerationJob(id=job_id, input_type=input_type, input_file_path=still, source_media_path=media,
                         owner_hash=owner_hash(token),
-                        source_url=url, music_path=music_path, platform=platform, format=format,
+                        source_url=url, music_path=music_path, logo_path=logo_path, platform=platform, format=format,
                         brand_context={"brand_name": brand_name.strip(), "brand_description": brand_description.strip(),
-                                       "call_to_action": call_to_action.strip() or "Explore the collection"},
+                                       "call_to_action": call_to_action.strip() or "Explore the collection",
+                                       "brand_color": brand_color.upper() or None},
                         generation_mode=get_settings().generation_mode)
     try:
         session.add(job)

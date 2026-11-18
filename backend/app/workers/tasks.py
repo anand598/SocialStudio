@@ -84,7 +84,8 @@ def generate(self, job_id_string: str):
         content = provider.generate_social_content(analysis, job.brand_context, output, source)
         if not transition(job_id, run_token, stage="rendering", progress=55, generated_content=content.model_dump()):
             return
-        rendered, thumbnail = render_output(job.id, output, still, content, job.brand_context, run_token,
+        brand = {**job.brand_context, "logo_path": job.logo_path}
+        rendered, thumbnail = render_output(job.id, output, still, content, brand, run_token,
                                             job.source_media_path if job.input_type == "video" else None,
                                             music=job.music_path)
         if not transition(job_id, run_token, stage="finalizing", progress=95):

@@ -522,3 +522,84 @@ describe("background music", () => {
     expect((call?.[1]?.body as FormData).get("music")).toBeNull();
   });
 });
+
+describe("brand kit", () => {
+  async function startWithImage() {
+    window.history.replaceState(null, "", "/");
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:sample");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    const fetch = mockFetch({ ...job, status: "queued", stage: "validating" });
+    render(<Home />);
+    await screen.findByText("Demo mode is on.");
+    fireEvent.change(screen.getByLabelText("Product image"), {
+      target: {
+        files: [new File(["x"], "product.png", { type: "image/png" })],
+      },
+    });
+    return fetch;
+  }
+  async function submitted(fetch: ReturnType<typeof mockFetch>) {
+    fireEvent.click(
+      screen.getByRole("button", { name: /Create my Instagram Reel/ }),
+    );
+    await screen.findByText("Your request is in the queue.");
+    const call = fetch.mock.calls.find(
+      ([url, init]) =>
+        String(url).endsWith("/generations") && init?.method === "POST",
+    );
+    return call?.[1]?.body as FormData;
+  }
+
+  it("sends the chosen brand colour and logo", async () => {
+    const fetch = await startWithImage();
+    fireEvent.change(screen.getByLabelText("Brand colour"), {
+      target: { value: "#e4572e" },
+    });
+    expect(screen.getByText("#E4572E")).toBeInTheDocument();
+    const logo = new File(["x"], "logo.png", { type: "image/png" });
+    fireEvent.change(screen.getByLabelText(/^Logo/), {
+      target: { files: [logo] },
+    });
+    expect(screen.getByText("logo.png")).toBeInTheDocument();
+    const data = await submitted(fetch);
+    expect(data.get("brand_color")).toBe("#E4572E");
+    expect(data.get("logo")).toBe(logo);
+  });
+
+  it("validates the logo before upload", async () => {
+    await startWithImage();
+    const field = screen.getByLabelText(/^Logo/);
+    fireEvent.change(field, {
+      target: { files: [new File(["x"], "logo.gif", { type: "image/gif" })] },
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Choose a PNG, JPEG, or WebP logo.",
+    );
+    const huge = new File(["x"], "logo.png", { type: "image/png" });
+    Object.defineProperty(huge, "size", { value: 3 * 1024 * 1024 });
+    fireEvent.change(field, { target: { files: [huge] } });
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Choose a logo smaller than 2 MB.",
+    );
+  });
+
+  it("sends neither when they are not chosen or are removed", async () => {
+    const fetch = await startWithImage();
+    expect(
+      screen.getByText("From your product photo"),
+    ).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Brand colour"), {
+      target: { value: "#1a237e" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Remove brand colour" }));
+    fireEvent.change(screen.getByLabelText(/^Logo/), {
+      target: {
+        files: [new File(["x"], "logo.png", { type: "image/png" })],
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Remove logo" }));
+    const data = await submitted(fetch);
+    expect(data.get("brand_color")).toBeNull();
+    expect(data.get("logo")).toBeNull();
+  });
+});

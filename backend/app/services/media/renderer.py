@@ -19,7 +19,7 @@ from app.schemas.content import SocialContent
 from app.services.ai.provider import GenerationError
 from app.services.media.ffmpeg import (AUDIO_OUT, encode_frames, has_audio, music_filter, probe, require_tools, run,
                                        video_stream)
-from app.services.media.promo import FPS, Promo, layout
+from app.services.media.promo import FPS, Promo, fit_logo, hex_rgb, layout, text_on
 from app.services.media.typography import BOLD_FONTS, REGULAR_FONTS, fit_text, font, wrap_text  # noqa: F401
 from app.services.storage.local import job_directory
 
@@ -28,12 +28,28 @@ INK = "#102f2b"
 HOOK_SECONDS = 2
 
 
-def compose_frame(output: OutputFormat, source: str, text: str, brand: str, *, cta: str = "") -> Image.Image:
-    """Poster for image formats: photo-derived backdrop, product card, headline, brand, CTA."""
-    return Promo(output, source, [(text, 1)], brand=brand, cta=cta).poster()
+def compose_frame(output: OutputFormat, source: str, text: str, brand: str, *, cta: str = "",
+                  brand_color: str | None = None, logo: str | None = None) -> Image.Image:
+    """Poster for image formats: photo- or brand-coloured backdrop, product card, headline, brand, CTA."""
+    return Promo(output, source, [(text, 1)], brand=brand, cta=cta, brand_color=brand_color, logo=logo).poster()
 
 
-def overlay_image(output: OutputFormat, text: str, position: str, *, accent: bool = False) -> Image.Image:
+def brand_anchor(output: OutputFormat) -> tuple[int, int]:
+    """Top-left of the brand mark on reframed video, below the top app UI on vertical feeds."""
+    margin = round(min(output.width, output.height) * 0.06)
+    return margin, round(output.height * 0.1) if output.orientation == "portrait" else margin
+
+
+def logo_overlay(output: OutputFormat, logo: str) -> Image.Image:
+    """Transparent full-frame layer with the logo at the brand position."""
+    layer = Image.new("RGBA", (output.width, output.height), (0, 0, 0, 0))
+    mark = fit_logo(logo, output)
+    layer.paste(mark, brand_anchor(output), mark)
+    return layer
+
+
+def overlay_image(output: OutputFormat, text: str, position: str, *, accent: bool = False,
+                  accent_colour: tuple[int, int, int] | None = None) -> Image.Image:
     """Transparent full-frame overlay with a readable text box, for compositing onto source video."""
     width, height = output.width, output.height
     layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
@@ -48,16 +64,18 @@ def overlay_image(output: OutputFormat, text: str, position: str, *, accent: boo
     portrait = output.orientation == "portrait"
     # Vertical feeds cover the top ~10% (tabs) and bottom ~20% (caption, username, music) with app UI.
     if position == "brand":
-        left, top = margin, round(height * 0.1) if portrait else margin
+        left, top = brand_anchor(output)
     else:
         left = (width - box_w) // 2
         top = round(height * (0.15 if portrait else 0.08)) if position == "top" \
             else height - round(height * (0.22 if portrait else 0.1)) - box_h
-    fill = (204, 237, 203, 240) if accent else (16, 47, 43, 205)
+    accent_fill = accent_colour or (204, 237, 203)
+    fill = (*accent_fill, 240) if accent else (16, 47, 43, 205)
+    ink = "#{:02x}{:02x}{:02x}".format(*text_on(accent_fill)) if accent else "#ffffff"
     draw.rounded_rectangle((left, top, left + box_w, top + box_h), radius=round(size * 0.5), fill=fill)
     for row, line in enumerate(lines):
         line_x = left + (box_w - draw.textlength(line, font=face)) / 2
-        draw.text((line_x, top + pad + row * line_height), line, font=face, fill=INK if accent else "#ffffff")
+        draw.text((line_x, top + pad + row * line_height), line, font=face, fill=ink)
     return layer
 
 
@@ -95,7 +113,8 @@ def save_thumbnail(image: Image.Image, directory: Path, run_token: UUID) -> Path
 
 def render_image(directory: Path, output: OutputFormat, source: str, content: SocialContent, brand: dict,
                  run_token: UUID) -> tuple[Path, Path]:
-    poster = compose_frame(output, source, content.hook, brand.get("brand_name", ""), cta=content.call_to_action)
+    poster = compose_frame(output, source, content.hook, brand.get("brand_name", ""), cta=content.call_to_action,
+                           brand_color=brand.get("brand_color"), logo=brand.get("logo_path"))
     temporary = directory / f"output-{run_token}.partial.jpg"
     poster.save(temporary, "JPEG", quality=92, optimize=True)
     try:
@@ -126,7 +145,7 @@ def slideshow_scenes(content: SocialContent) -> list[tuple[str, int]]:
 def render_slideshow(directory: Path, scratch: Path, output: OutputFormat, source: str, content: SocialContent,
                      brand: dict, run_token: UUID, music: str | None = None) -> tuple[Path, Path]:
     video = Promo(output, source, slideshow_scenes(content), brand=brand.get("brand_name", ""),
-                  cta=content.call_to_action)
+                  cta=content.call_to_action, brand_color=brand.get("brand_color"), logo=brand.get("logo_path"))
     temporary = directory / f"output-{run_token}.partial.mp4"
     encode_frames(video.frames(), output.width, output.height, FPS, temporary, music=music, duration=video.duration)
     # Cover image: the opening shot once its caption has landed.
@@ -145,12 +164,17 @@ def render_from_video(directory: Path, scratch: Path, output: OutputFormat, sour
     hook_end = round(min(3.5, duration * 0.45), 2)
     cta_start = round(max(duration - 3.5, duration * 0.55), 2)
     overlay_image(output, content.hook, "top").save(scratch / "hook.png")
-    overlay_image(output, content.call_to_action, "bottom", accent=True).save(scratch / "cta.png")
-    brand_name = brand.get("brand_name", "")
+    colour = brand.get("brand_color")
+    overlay_image(output, content.call_to_action, "bottom", accent=True,
+                  accent_colour=hex_rgb(colour) if colour else None).save(scratch / "cta.png")
+    # The logo, when given, stands in for the brand name.
+    if brand.get("logo_path"):
+        logo_overlay(output, brand["logo_path"]).save(scratch / "brand.png")
+    elif brand.get("brand_name"):
+        overlay_image(output, brand["brand_name"], "brand").save(scratch / "brand.png")
+    has_brand = (scratch / "brand.png").is_file()
     inputs = ["-i", source_video]
-    for name in ["hook", "cta"] + (["brand"] if brand_name else []):
-        if name == "brand":
-            overlay_image(output, brand_name, "brand").save(scratch / "brand.png")
+    for name in ["hook", "cta"] + (["brand"] if has_brand else []):
         inputs += ["-loop", "1", "-framerate", "30", "-t", str(duration), "-i", str(scratch / f"{name}.png")]
     # Fill the frame with a blurred, darkened copy and centre the uncropped source on top,
     # so any source aspect becomes the platform aspect without distortion or losing the product.
@@ -161,7 +185,7 @@ def render_from_video(directory: Path, scratch: Path, output: OutputFormat, sour
              f"[bg][fg]overlay=(W-w)/2:(H-h)/2[base];"
              f"[base][1:v]overlay=0:0:enable='between(t,0,{hook_end})'[v1];"
              f"[v1][2:v]overlay=0:0:enable='gte(t,{cta_start})'[v2];")
-    graph += "[v2][3:v]overlay=0:0,format=yuv420p[out]" if brand_name else "[v2]format=yuv420p[out]"
+    graph += "[v2][3:v]overlay=0:0,format=yuv420p[out]" if has_brand else "[v2]format=yuv420p[out]"
     if music:
         # Music sits quietly under the clip's own sound (or plays alone if the clip is silent).
         index = len([arg for arg in inputs if arg == "-i"])

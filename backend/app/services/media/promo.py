@@ -45,6 +45,51 @@ def palette(image: Image.Image) -> tuple[tuple[int, int, int], tuple[int, int, i
     return rgb(min(0.65, saturation * 0.8 + 0.1), 0.17), rgb(min(0.5, max(0.3, saturation * 0.6)), 0.96)
 
 
+Colour = tuple[int, int, int]
+WHITE = (255, 255, 255)
+
+
+def hex_rgb(value: str) -> Colour:
+    value = value.lstrip("#")
+    return int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16)
+
+
+def contrast(a: Colour, b: Colour) -> float:
+    """WCAG contrast ratio between two sRGB colours."""
+    def luminance(colour: Colour) -> float:
+        channels = [c / 255 for c in colour]
+        r, g, b = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+    high, low = sorted((luminance(a), luminance(b)), reverse=True)
+    return (high + 0.05) / (low + 0.05)
+
+
+def text_on(fill: Colour) -> Colour:
+    """White or dark ink, whichever reads better on the fill."""
+    return WHITE if contrast(fill, WHITE) >= contrast(fill, INK) else INK
+
+
+def brand_palette(colour: str) -> tuple[Colour, Colour]:
+    """(dark backdrop tint, accent) for a brand colour: the accent is the exact colour, the tint its hue."""
+    accent = hex_rgb(colour)
+    hue, saturation, _ = colorsys.rgb_to_hsv(*(c / 255 for c in accent))
+    dark = tuple(round(c * 255) for c in colorsys.hsv_to_rgb(hue, min(0.7, saturation * 0.85 + 0.1), 0.2))
+    return dark, accent
+
+
+def fit_logo(path: str, output: OutputFormat) -> Image.Image:
+    """The logo scaled for the brand position: a fixed cap height, never wider than 40 % of the frame."""
+    with Image.open(path) as image:
+        logo = image.convert("RGBA")
+    box = logo.getchannel("A").getbbox()  # place by the visible mark, not its transparent margins
+    if box:
+        logo = logo.crop(box)
+    height = round(min(output.width, output.height) * 0.07)
+    scale = min(height / logo.height, output.width * 0.4 / logo.width)
+    return logo.resize((max(1, round(logo.width * scale)), max(1, round(logo.height * scale))),
+                       Image.Resampling.LANCZOS)
+
+
 def smooth(x: float) -> float:
     x = min(1.0, max(0.0, x))
     return x * x * (3 - 2 * x)
@@ -116,11 +161,14 @@ def same_text(a: str, b: str) -> bool:
 class Promo:
     """Composes promo frames for a still product image; also renders the static poster."""
 
-    def __init__(self, output: OutputFormat, source: str, scenes: list[tuple[str, int]], *, brand: str, cta: str):
+    def __init__(self, output: OutputFormat, source: str, scenes: list[tuple[str, int]], *, brand: str, cta: str,
+                 brand_color: str | None = None, logo: str | None = None):
         self.output, self.size = output, (output.width, output.height)
         with Image.open(source) as image:
             self.photo = image.convert("RGB")
-        self.dark, self.accent = palette(self.photo)
+        self.dark, self.accent = brand_palette(brand_color) if brand_color else palette(self.photo)
+        # Brand name and accent bar sit on the dark backdrop: a dark brand colour falls back to white there.
+        self.highlight = self.accent if contrast(self.accent, self.dark) >= 3 else WHITE
         self.layout = layout(output)
         self.cta = cta.strip()
         # The end card carries the CTA as a button; if its caption is just the CTA, echo the opening line.
@@ -136,8 +184,15 @@ class Promo:
         self._backdrop = self._make_backdrop(oversize=1.08)
         self._mask, self._shadow = self._card_masks(card_w, card_h)
         self._sources: dict[int, tuple[Image.Image, float]] = {}
-        self._brand = self._text_layer((brand or "Product spotlight").upper()[:60], self.layout.brand,
-                                       round(min(self.size) * 0.03), self.accent, shadow=False)
+        self.logo_box = None
+        if logo:
+            mark = fit_logo(logo, output)
+            x, y = self.layout.brand
+            self.logo_box = (x, y, x + mark.width, y + mark.height)
+            self._brand = (mark.convert("RGB"), mark.getchannel("A"), (x, y))
+        else:
+            self._brand = self._text_layer((brand or "Product spotlight").upper()[:60], self.layout.brand,
+                                           round(min(self.size) * 0.03), self.highlight, shadow=False)
         self._texts = [self._headline_layer(text) for text in self.texts]
         self.cta_box, self._cta = self._cta_layer() if self.cta else (None, None)
 
@@ -209,7 +264,7 @@ class Promo:
         pill = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         draw = ImageDraw.Draw(pill)
         draw.rounded_rectangle((0, 0, w - 1, h - 1), radius=h // 2, fill=(*self.accent, 255))
-        draw.text((size * 1.1, (h - size) / 2 - size * 0.08), label, font=face, fill=(*INK, 255))
+        draw.text((size * 1.1, (h - size) / 2 - size * 0.08), label, font=face, fill=(*text_on(self.accent), 255))
         x, y = self.layout.cta
         return (x, y, x + w, y + h), (pill.convert("RGB"), pill.getchannel("A"), (x, y))
 
@@ -265,7 +320,7 @@ class Promo:
         bar = round(min(self.size) * 0.11 * smooth((local - 0.05) / 0.4))
         if bar > 0:
             thickness = max(6, round(min(self.size) * 0.008))
-            ImageDraw.Draw(frame).rectangle((x0, y0 - thickness * 3, x0 + bar, y0 - thickness * 2), fill=self.accent)
+            ImageDraw.Draw(frame).rectangle((x0, y0 - thickness * 3, x0 + bar, y0 - thickness * 2), fill=self.highlight)
         reveal = smooth((local - 0.15) / 0.45)
         self._paste(frame, self._texts[index], reveal, round((1 - reveal) * self.size[1] * 0.025))
         if self._cta and index == len(self.texts) - 1:  # the end card (or the poster) carries the button

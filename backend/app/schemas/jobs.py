@@ -16,6 +16,7 @@ class JobResponse(BaseModel):
     format: str
     output_kind: Literal["video", "image"]
     has_music: bool
+    has_logo: bool
     generation_mode: str
     created_at: datetime
     updated_at: datetime

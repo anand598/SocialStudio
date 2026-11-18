@@ -37,8 +37,8 @@ def create_job_directory(job_id: UUID) -> Path:
     return directory
 
 
-def decode_image(data: bytes, expected_format: str | None = None) -> Image.Image:
-    """Validate untrusted bytes and return a metadata-free RGB image. Raises ValueError."""
+def decode_rgba(data: bytes, expected_format: str | None = None) -> Image.Image:
+    """Verify untrusted still-image bytes and return them upright as RGBA. Raises ValueError."""
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
@@ -48,16 +48,21 @@ def decode_image(data: bytes, expected_format: str | None = None) -> Image.Image
                     raise ValueError("Unsupported content")
                 image.verify()
             with Image.open(io.BytesIO(data)) as image:
-                normalized = ImageOps.exif_transpose(image).convert("RGBA")
-                if min(normalized.size) < 64:
-                    raise ValueError("Image too small")
-                # Composite transparency on white; strip metadata and embedded payloads.
-                canvas = Image.new("RGB", normalized.size, "white")
-                canvas.paste(normalized, mask=normalized.getchannel("A"))
-                canvas.thumbnail((2400, 2400))
-                return canvas
+                return ImageOps.exif_transpose(image).convert("RGBA")
     except (UnidentifiedImageError, OSError, Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
         raise ValueError("Invalid image") from exc
+
+
+def decode_image(data: bytes, expected_format: str | None = None) -> Image.Image:
+    """Validate untrusted bytes and return a metadata-free RGB image. Raises ValueError."""
+    normalized = decode_rgba(data, expected_format)
+    if min(normalized.size) < 64:
+        raise ValueError("Image too small")
+    # Composite transparency on white; strip metadata and embedded payloads.
+    canvas = Image.new("RGB", normalized.size, "white")
+    canvas.paste(normalized, mask=normalized.getchannel("A"))
+    canvas.thumbnail((2400, 2400))
+    return canvas
 
 
 def save_still(canvas: Image.Image, directory: Path) -> str:
@@ -246,3 +251,53 @@ def build_storyboard(source: Path, duration: float, directory: Path) -> Path | N
         return target
     except (GenerationError, OSError, ValueError):
         return None
+
+
+INVALID_LOGO = "The logo is invalid. Use a PNG, JPEG, or WebP image with visible content."
+
+
+def check_logo_type(upload: UploadFile) -> str:
+    """MIME/extension agreement for an optional logo; returns the expected Pillow format."""
+    spec = ALLOWED.get(upload.content_type or "")
+    if not spec or Path(upload.filename or "").suffix.lower() not in spec[0]:
+        raise HTTPException(415, "Upload the logo as a PNG, JPEG, or WebP image with a matching extension.")
+    return spec[1]
+
+
+async def store_logo(upload: UploadFile, directory: Path) -> str:
+    """Store an optional brand logo in an existing job directory as a clean, trimmed RGBA PNG.
+
+    The caller removes the job directory if this raises.
+    """
+    expected = check_logo_type(upload)
+    limit = get_settings().max_logo_upload_size_mb * 1024 * 1024
+    data = bytearray()
+    while chunk := await upload.read(64 * 1024):
+        data.extend(chunk)
+        if len(data) > limit:
+            raise HTTPException(413, "The logo exceeds the upload size limit.")
+    return await run_in_threadpool(save_logo, bytes(data), expected, directory)
+
+
+def save_logo(data: bytes, expected_format: str, directory: Path) -> str:
+    try:
+        image = decode_rgba(data, expected_format)
+        # Trim transparent margins so placement and sizing follow the visible mark.
+        box = image.getchannel("A").getbbox()
+        if box is None:
+            raise ValueError("Fully transparent")
+        visible = image.crop(box)
+        if min(visible.size) < 8:
+            raise ValueError("Logo too small")
+    except ValueError as exc:
+        raise HTTPException(422, INVALID_LOGO) from exc
+    visible.thumbnail((800, 800))
+    clean = Image.new("RGBA", visible.size)  # fresh image: no metadata or embedded payloads
+    clean.paste(visible, (0, 0))
+    target, partial = directory / "logo.png", directory / "logo.partial.png"
+    try:
+        clean.save(partial, "PNG")
+        os.replace(partial, target)
+    except OSError as exc:
+        raise HTTPException(503, "Logo storage is unavailable. Please try again shortly.") from exc
+    return str(target)
