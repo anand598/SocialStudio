@@ -138,7 +138,7 @@ See [.env.example](.env.example). Defaults are development-only, including the P
 | `FONT_PATH`, `FONT_BOLD_PATH` | Optional TrueType fonts (body, headlines) for other scripts or branding; Docker bundles DejaVu Sans and Sans Bold |
 | `COOKIE_SECURE` | Mark the job-owner cookie `Secure`; set `true` whenever served over HTTPS (the public Compose override does) |
 
-`CELERY_RESULT_BACKEND` is reserved; task results are deliberately disabled. PostgreSQL job records are the source of truth. AI generation settings are externalized as `OLLAMA_TEMPERATURE` (default 0.2) and `OLLAMA_NUM_PREDICT` (default 2200).
+`CELERY_RESULT_BACKEND` is reserved; task results are deliberately disabled. PostgreSQL job records are the source of truth. Queue delivery uses a transactional outbox: each new, retried, or new-version job is committed together with a queue message, which the API publishes at once; if the broker is unavailable the job stays queued and a relay thread in each API process republishes it with backoff (`OUTBOX_POLL_SECONDS`, `OUTBOX_MAX_BACKOFF_SECONDS`) once the broker returns. A job still unpublished after `STALE_JOB_SECONDS` is expired with a "waited too long in the queue" message. AI generation settings are externalized as `OLLAMA_TEMPERATURE` (default 0.2) and `OLLAMA_NUM_PREDICT` (default 2200).
 
 ## API
 

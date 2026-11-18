@@ -22,6 +22,7 @@ from app.api.generations import router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.core.limits import UploadLimitsMiddleware
+from app.services.outbox import OutboxRelay
 
 settings = get_settings()
 logger = logging.getLogger("social.api")
@@ -31,7 +32,15 @@ logger = logging.getLogger("social.api")
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
+    # Publishes queue messages the request path could not (see app.services.outbox). It lives in the API,
+    # not in Celery, so it keeps retrying while the broker is down; every API process runs one safely.
+    relay = OutboxRelay() if get_settings().outbox_relay_enabled else None
+    app.state.outbox_relay = relay
+    if relay:
+        relay.start()
     yield
+    if relay:
+        relay.stop()
     engine.dispose()
 
 

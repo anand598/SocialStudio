@@ -29,14 +29,25 @@ def transition(job_id: UUID, run_token: UUID, **values) -> bool:
         return result.rowcount == 1
 
 
+STALE_MESSAGES = {
+    # Never started: the broker or the worker was unavailable throughout (the outbox relay kept trying,
+    # and stops once the job is no longer queued).
+    "queued": "This generation waited too long in the queue. Please retry it.",
+    "processing": "This generation stopped responding. Please retry it.",
+}
+
+
 def expire_stale(session) -> int:
     cutoff = now() - timedelta(seconds=get_settings().stale_job_seconds)
-    result = session.execute(update(GenerationJob).where(
-        GenerationJob.status.in_(["queued", "processing"]), GenerationJob.updated_at < cutoff).values(
-        status="failed", stage="failed", error_code="JOB_EXPIRED",
-        error_message="This generation stopped responding. Please retry it.", completed_at=now(), updated_at=now()))
+    expired = 0
+    for status, message in STALE_MESSAGES.items():
+        result = session.execute(update(GenerationJob).where(
+            GenerationJob.status == status, GenerationJob.updated_at < cutoff).values(
+            status="failed", stage="failed", error_code="JOB_EXPIRED",
+            error_message=message, completed_at=now(), updated_at=now()))
+        expired += result.rowcount
     session.commit()
-    return result.rowcount
+    return expired
 
 
 @celery_app.task(name="social.recover_stale")

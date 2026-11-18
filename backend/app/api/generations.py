@@ -20,10 +20,11 @@ from app.core.platforms import SUPPORTED_FORMATS, get_format
 from app.db.session import get_session
 from app.models.job import GenerationJob
 from app.schemas.jobs import JobHistory, JobResponse, VariantRequest
+from app.services import outbox
 from app.services.ingest.url import UrlRejected, check_url
 from app.services.storage.local import (check_logo_type, check_music_type, create_job_directory, job_directory,
                                         store_image, store_logo, store_music, store_video)
-from app.workers.tasks import expire_stale, generate
+from app.workers.tasks import expire_stale
 
 router = APIRouter(prefix="/api/v1")
 logger = logging.getLogger(__name__)
@@ -129,6 +130,7 @@ async def create_generation(
                         generation_mode=get_settings().generation_mode)
     try:
         session.add(job)
+        message = outbox.add(session, job_id)  # Same transaction: no job without its queue message.
         session.commit()
         session.refresh(job)
     except SQLAlchemyError as exc:
@@ -137,7 +139,8 @@ async def create_generation(
         logger.exception("Could not persist job %s", job_id)
         raise HTTPException(503, "Storage is unavailable. Please try again shortly.") from exc
     set_owner_cookie(response, token)  # Refreshes the expiry on every new job.
-    enqueue(job, session)
+    # Off the event loop: an unreachable broker blocks until its connect timeout.
+    await run_in_threadpool(outbox.publish_now, session, message)
     return job
 
 
@@ -179,17 +182,6 @@ def get_generation(job_id: UUID, token: str | None = Owner, session: Session = D
     return find_job(job_id, session, token)
 
 
-def enqueue(job: GenerationJob, session: Session) -> None:
-    try:
-        generate.apply_async(args=[str(job.id)], retry=False)
-    except Exception:
-        logger.exception("Could not enqueue job %s", job.id)
-        job.status, job.stage = "failed", "failed"
-        job.error_code = "QUEUE_UNAVAILABLE"
-        job.error_message = "The generation queue is unavailable. Start the broker and worker, then retry."
-        session.commit()
-
-
 @router.post("/generations/{job_id}/retry", response_model=JobResponse, status_code=202)
 def retry_generation(job_id: UUID, token: str | None = Owner, session: Session = Depends(get_session)):
     job = find_job(job_id, session, token)
@@ -200,11 +192,13 @@ def retry_generation(job_id: UUID, token: str | None = Owner, session: Session =
     result = session.execute(update(GenerationJob).where(GenerationJob.id == job_id,
         GenerationJob.status == "failed", GenerationJob.purged_at.is_(None)).values(status="queued", stage="validating", progress=0,
             error_code=None, error_message=None, completed_at=None, updated_at=datetime.now(timezone.utc)))
-    session.commit()
     if not result.rowcount:
+        session.rollback()
         raise HTTPException(409, "This generation has already been retried.")
+    message = outbox.add(session, job_id)  # Committed with the status change, or not at all.
+    session.commit()
     session.refresh(job)
-    enqueue(job, session)
+    outbox.publish_now(session, message)
     return job
 
 
@@ -277,6 +271,7 @@ def create_variant(job_id: UUID, response: Response, body: VariantRequest | None
             number = (session.scalar(select(func.max(GenerationJob.variant)).where(family)) or 1) + 1
             job = GenerationJob(id=new_id, variant=number, **fields)
             session.add(job)
+            message = outbox.add(session, new_id)  # Same transaction as the new job.
             session.commit()
             session.refresh(job)
             break
@@ -292,7 +287,7 @@ def create_variant(job_id: UUID, response: Response, body: VariantRequest | None
             logger.exception("Could not persist a version of job %s", job_id)
             raise HTTPException(503, "Storage is unavailable. Please try again shortly.") from exc
     set_owner_cookie(response, token)
-    enqueue(job, session)
+    outbox.publish_now(session, message)
     return job
 
 

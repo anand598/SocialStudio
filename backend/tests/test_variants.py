@@ -57,7 +57,7 @@ def version(client, job_id, body=None):
 @pytest.fixture
 def queued(monkeypatch):
     jobs = []
-    monkeypatch.setattr("app.api.generations.enqueue", lambda job, session: jobs.append(str(job.id)))
+    monkeypatch.setattr("app.services.outbox.send", lambda task, job_id: jobs.append(str(job_id)))
     return jobs
 
 
