@@ -152,6 +152,7 @@ All routes use `/api/v1`:
 | GET | `/generations?limit=20` | This browser's own jobs, newest first (owner cookie; empty without one); `limit` 1–50 |
 | GET | `/generations/{id}` | Persisted state, generated copy, safe errors |
 | POST | `/generations/{id}/retry` | Retry a failed job; 202 |
+| POST | `/generations/{id}/variants` | New version of a completed job from the same stored inputs, optionally for another platform/format (JSON `{platform, format}`); fresh copy that avoids the previous hook; 202 with the new job (`parent_id`, `variant`) |
 | GET | `/generations/{id}/content` | Completed analysis, caption package, platform post text, scraped page metadata |
 | GET | `/generations/{id}/preview` | Inline MP4 (range support) or JPEG |
 | GET | `/generations/{id}/download` | MP4 or JPEG attachment named `{platform}-{format}-{id}` |

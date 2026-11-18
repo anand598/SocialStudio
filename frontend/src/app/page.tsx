@@ -61,6 +61,9 @@ type Job = {
   output_kind?: "video" | "image";
   has_music?: boolean;
   post_text?: string | null;
+  // Set on jobs made with "Make another version"; originals are null / 1.
+  parent_id?: string | null;
+  variant?: number;
   generation_mode: string;
   error_message: string | null;
   product_analysis: Analysis | null;
@@ -146,6 +149,20 @@ export default function Home() {
   const [submitting, setSubmitting] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [copied, setCopied] = useState(false);
+  // The "another version" choice, remembered per job; otherwise it follows the open job.
+  const [variantChoice, setVariantChoice] = useState<{
+    jobId: string;
+    platform: string;
+    format: string;
+  } | null>(null);
+  // A version request and its error belong to the job they were made from, so they never
+  // follow the user to another job.
+  const [variantSendingFrom, setVariantSendingFrom] = useState("");
+  const [variantErrorFor, setVariantErrorFor] = useState<{
+    jobId: string;
+    message: string;
+  } | null>(null);
+  const openJobID = useRef("");
   const input = useRef<HTMLInputElement>(null);
   const busy =
     submitting || job?.status === "queued" || job?.status === "processing";
@@ -163,6 +180,26 @@ export default function Home() {
   );
   const resultFormat = jobFormat ?? selectedFormat;
   const resultKind = job?.output_kind ?? resultFormat?.kind ?? "video";
+  const variantSending = !!job && variantSendingFrom === job.id;
+  const variantError =
+    variantErrorFor && variantErrorFor.jobId === job?.id
+      ? variantErrorFor.message
+      : "";
+  const variantPlatform =
+    variantChoice && variantChoice.jobId === job?.id
+      ? variantChoice.platform
+      : (job?.platform ?? "");
+  const variantFormats = formats.filter(
+    (item) => item.platform === variantPlatform,
+  );
+  const variantTarget =
+    variantFormats.find(
+      (item) =>
+        item.format ===
+        (variantChoice && variantChoice.jobId === job?.id
+          ? variantChoice.format
+          : job?.format),
+    ) ?? variantFormats[0];
   const stages = stagesFor(job?.input_type ?? inputType, resultKind);
   const imageLimit = config?.max_upload_size_mb ?? 15;
   const videoLimit = config?.max_video_upload_size_mb ?? 100;
@@ -184,6 +221,9 @@ export default function Home() {
       );
   }, []);
   useEffect(loadConfig, [loadConfig]);
+  useEffect(() => {
+    openJobID.current = jobID;
+  }, [jobID]);
   useEffect(() => {
     // The #job= fragment is the shareable result link; follow it on load and on
     // back/forward or pasted-link navigation, which change the hash without a reload.
@@ -395,6 +435,56 @@ export default function Home() {
     link.download = `caption-${job?.id}.txt`;
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  function chooseVariant(platformKey: string, formatKey?: string) {
+    if (!job) return;
+    setVariantErrorFor(null);
+    setVariantChoice({
+      jobId: job.id,
+      platform: platformKey,
+      format:
+        formatKey ??
+        formats.find((item) => item.platform === platformKey)?.format ??
+        "",
+    });
+  }
+  async function createVariant(event: FormEvent) {
+    event.preventDefault();
+    if (!job || !variantTarget || variantSending) return;
+    const from = job.id;
+    setVariantSendingFrom(from);
+    setVariantErrorFor(null);
+    try {
+      const next = await request<Job>(
+        `/api/v1/generations/${job.id}/variants`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            platform: variantTarget.platform,
+            format: variantTarget.format,
+          }),
+        },
+      );
+      // The user opened another job meanwhile: the version is still made (it shows in
+      // Recent creatives), but don't pull them away from what they chose.
+      if (openJobID.current !== from) return;
+      setJob(next);
+      setJobID(next.id);
+      setCopied(false);
+      // A real history entry, so Back returns to the original.
+      window.location.hash = `job=${next.id}`;
+    } catch (err) {
+      setVariantErrorFor({
+        jobId: from,
+        message:
+          err instanceof Error
+            ? err.message
+            : "We couldn’t start a new version. Try again.",
+      });
+    } finally {
+      setVariantSendingFrom((current) => (current === from ? "" : current));
+    }
   }
   const activeStage = Math.max(
     stages.findIndex((stage) => stage.key === job?.stage),
@@ -891,6 +981,9 @@ export default function Home() {
                       ? `${resultFormat.label.toUpperCase()} · ${resultFormat.width} × ${resultFormat.height}`
                       : "READY FOR YOUR CLOSE-UP"}
                   </span>
+                  {(job.variant ?? 1) > 1 && (
+                    <span className="version-tag">Version {job.variant}</span>
+                  )}
                 </div>
               ) : (
                 <div className="mockup-stage">
@@ -1011,6 +1104,76 @@ export default function Home() {
                   </p>
                 )}
               </div>
+              {job?.status === "completed" && variantTarget && (
+                <form
+                  className="variant-form"
+                  onSubmit={createVariant}
+                  aria-labelledby="variant-heading"
+                >
+                  <h3 id="variant-heading">Make another version</h3>
+                  <div className="field-row">
+                    <div>
+                      <label className="field-label" htmlFor="variant-platform">
+                        Platform{" "}
+                        <span className="sr-only">for the new version</span>
+                      </label>
+                      <select
+                        id="variant-platform"
+                        value={variantTarget.platform}
+                        disabled={variantSending}
+                        onChange={(e) => chooseVariant(e.target.value)}
+                      >
+                        {platforms.map((item) => (
+                          <option key={item.platform} value={item.platform}>
+                            {item.platform_label ?? item.platform}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="field-label" htmlFor="variant-format">
+                        Format{" "}
+                        <span className="sr-only">for the new version</span>
+                      </label>
+                      <select
+                        id="variant-format"
+                        value={variantTarget.format}
+                        disabled={variantSending}
+                        onChange={(e) =>
+                          chooseVariant(variantTarget.platform, e.target.value)
+                        }
+                      >
+                        {variantFormats.map((item) => (
+                          <option key={item.format} value={item.format}>
+                            {item.label.replace(`${item.platform_label} `, "")} ·{" "}
+                            {item.aspect_ratio}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  <p className="field-hint">
+                    Reuses the same upload with fresh copy.
+                    {job.has_music && variantTarget.kind === "image"
+                      ? " Your music is left out — images have no sound."
+                      : ""}
+                  </p>
+                  {variantError && (
+                    <p className="notice error" role="alert">
+                      {variantError}
+                    </p>
+                  )}
+                  <button
+                    type="submit"
+                    className="secondary-button"
+                    disabled={variantSending}
+                  >
+                    {variantSending
+                      ? "Creating your new version…"
+                      : `Create a new ${variantTarget.label} version`}
+                  </button>
+                </form>
+              )}
               {(job?.status === "processing" || job?.status === "queued") && (
                 <ol className="stage-list">
                   {stages.map((stage, index) => (

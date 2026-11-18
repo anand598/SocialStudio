@@ -57,6 +57,10 @@ def generate(self, job_id_string: str):
         if not result.rowcount:
             return
         job = session.get(GenerationJob, job_id)
+        # A new version is asked not to repeat the hook and title of the result it was made from.
+        parent = session.get(GenerationJob, job.parent_id) if job.parent_id else None
+        previous = (parent.generated_content or {}) if parent else {}
+        avoid = [line for line in (previous.get("hook"), previous.get("title")) if line]
     try:
         output = get_format(job.platform, job.format)
         if output is None:
@@ -81,7 +85,8 @@ def generate(self, job_id_string: str):
             analysis = provider.analyze_product_image(still)
         if not transition(job_id, run_token, stage="writing_copy", progress=40, product_analysis=analysis.model_dump()):
             return
-        content = provider.generate_social_content(analysis, job.brand_context, output, source)
+        content = provider.generate_social_content(analysis, job.brand_context, output, source,
+                                                   variant=job.variant, avoid=avoid)
         if not transition(job_id, run_token, stage="rendering", progress=55, generated_content=content.model_dump()):
             return
         brand = {**job.brand_context, "logo_path": job.logo_path}

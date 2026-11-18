@@ -10,6 +10,8 @@ type Summary = {
   format: string;
   output_kind: "video" | "image";
   headline: string | null;
+  // 1 for originals; 2+ for "another version" jobs (absent from older APIs).
+  variant?: number;
 };
 
 const HISTORY_LIMIT = 12;
@@ -85,7 +87,15 @@ export default function RecentJobs({
                   {item.headline && (
                     <strong className="recent-headline">{item.headline}</strong>
                   )}
-                  <span className="recent-format">{label}</span>
+                  <span className="recent-format">
+                    {label}
+                    {(item.variant ?? 1) > 1 && (
+                      <span className="recent-variant">
+                        <span aria-hidden="true">v{item.variant}</span>
+                        <span className="sr-only">, Version {item.variant}</span>
+                      </span>
+                    )}
+                  </span>
                 </span>
               </a>
             </li>

@@ -13,6 +13,8 @@ class GenerationJob(Base):
         CheckConstraint("status IN ('queued', 'processing', 'completed', 'failed')", name="job_status"),
         CheckConstraint("progress BETWEEN 0 AND 100", name="job_progress"),
         Index("ix_generation_jobs_owner_created", "owner_hash", "created_at"),
+        # Version numbers are unique within a family; originals (root_id NULL) are always version 1.
+        Index("ux_generation_jobs_root_variant", "root_id", "variant", unique=True),
     )
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     run_token: Mapped[uuid.UUID | None] = mapped_column()
@@ -33,6 +35,11 @@ class GenerationJob(Base):
     source_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     # SHA-256 of the creating browser's owner cookie; only that browser may read the job.
     owner_hash: Mapped[str | None] = mapped_column(String(64))
+    # Versions: a job made from a finished result records the job it was made from (parent_id) and the
+    # original at the top of its family (root_id; NULL for originals). variant numbers the family from 1.
+    parent_id: Mapped[uuid.UUID | None] = mapped_column()
+    root_id: Mapped[uuid.UUID | None] = mapped_column()
+    variant: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     platform: Mapped[str] = mapped_column(String(32))
     format: Mapped[str] = mapped_column(String(32))
     brand_context: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)

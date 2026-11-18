@@ -13,6 +13,7 @@ Social Studio turns a product **image, video, or product-page URL** into a ready
 | Show generation status | ✅ | Persisted stages (queued → fetching → analyzing → writing copy → rendering → done), polled by the UI. Restored after refresh via `#job=` |
 | Preview and download | ✅ | Aspect-correct `<video>`/`<img>` preview, file download, and caption copy/download |
 | Extra: background music | ✅ | Optional MP3/M4A/WAV for video formats: fitted to length and faded, or mixed under an uploaded clip's sound |
+| Extra: another version / repurpose | ✅ | One upload → new versions for any platform and format with fresh copy (`POST /generations/{id}/variants`) |
 | Extra: brand colour and logo | ✅ | Optional colour (exact button colour, hue-tinted backdrop, contrast-safe text) and logo on every format ([promo.py](../backend/app/services/media/promo.py)) |
 | Extra: recent creatives | ✅ | A per-browser history strip reopens past results ([RecentJobs.tsx](../frontend/src/app/RecentJobs.tsx), `GET /api/v1/generations`) |
 | Extra: private results | ✅ | Only the browser that created a job can open it (owner cookie); see "Key decisions" |
@@ -68,8 +69,8 @@ Browser (Next.js) ──/api proxy──▶ FastAPI ──job id──▶ Celery
 
 ## Verification
 
-- 129 backend tests: real FFmpeg renders and decodes, every format's dimensions, upload rejection, URL protection, AI schema handling, job lifecycle, access control, and render quality rules (bold headline size, safe zones, hook card).
-- 23 frontend tests, typecheck, and production build.
+- 159 backend tests: real FFmpeg renders and decodes, every format's dimensions, upload rejection, URL protection, AI schema handling, job lifecycle, access control, and render quality rules (bold headline size, safe zones, hook card).
+- 33 frontend tests, typecheck, and production build.
 - Live browser run (headless Chrome against live Ollama): 5 generation flows and 13 navigation, error, mobile, and network checks passed.
 - A 34 MB video uploaded through the UI is accepted.
 

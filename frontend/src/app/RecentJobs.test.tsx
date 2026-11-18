@@ -92,6 +92,19 @@ describe("recent creatives", () => {
     expect(links[2]).toHaveTextContent("Failed");
   });
 
+  it("badges later versions of a creative", async () => {
+    mockHistory({
+      items: [{ ...items[0], variant: 2 }, { ...items[1], variant: 1 }],
+    });
+    render(<RecentJobs activeId="" refreshKey="" labelFor={labelFor} />);
+    const links = within(
+      await screen.findByRole("list", { name: "Recent creatives" }),
+    ).getAllByRole("link");
+    expect(links[0]).toHaveTextContent("v2");
+    expect(links[0]).toHaveTextContent("Version 2");
+    expect(links[1]).not.toHaveTextContent(/v\d|Version/);
+  });
+
   it("marks the result that is open", async () => {
     mockHistory({ items });
     render(<RecentJobs activeId={running} refreshKey="" labelFor={labelFor} />);

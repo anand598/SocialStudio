@@ -603,3 +603,284 @@ describe("brand kit", () => {
     expect(data.get("logo")).toBeNull();
   });
 });
+
+describe("another version", () => {
+  const newId = "55555555-5555-4555-8555-555555555555";
+  // The POST answers with the queued new job; reading it back finds it finished.
+  function mockVariantFetch(
+    post: { status: number; body: unknown } = {
+      status: 202,
+      body: {
+        ...job,
+        id: newId,
+        status: "queued",
+        stage: "validating",
+        platform: "tiktok",
+        format: "video",
+        parent_id: id,
+        variant: 2,
+      },
+    },
+    original: Record<string, unknown> = {},
+  ) {
+    window.history.replaceState(null, "", `#job=${id}`);
+    return vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/config/platforms"))
+          return new Response(JSON.stringify(config), { status: 200 });
+        if (url.includes("/generations?"))
+          return new Response(JSON.stringify({ items: [] }), { status: 200 });
+        if (url.endsWith("/variants") && init?.method === "POST")
+          return new Response(JSON.stringify(post.body), {
+            status: post.status,
+          });
+        if (url.includes(newId))
+          return new Response(
+            JSON.stringify({
+              ...job,
+              id: newId,
+              platform: "tiktok",
+              format: "video",
+              parent_id: id,
+              variant: 2,
+            }),
+            { status: 200 },
+          );
+        return new Response(
+          JSON.stringify({ ...job, parent_id: null, variant: 1, ...original }),
+          { status: 200 },
+        );
+      });
+  }
+
+  it("is offered only for finished results", async () => {
+    window.history.replaceState(null, "", `#job=${id}`);
+    mockFetch({ ...job, status: "processing", stage: "rendering" });
+    render(<Home />);
+    await screen.findByText("Good stories take a moment. We’ll keep you posted.");
+    expect(
+      screen.queryByRole("button", { name: /Create a new .* version/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByLabelText(/Platform for the new version/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("defaults to the current format and filters formats by platform", async () => {
+    mockVariantFetch();
+    render(<Home />);
+    const button = await screen.findByRole("button", {
+      name: "Create a new Instagram Reel version",
+    });
+    expect(button).toBeEnabled();
+    const platform = screen.getByLabelText(/Platform for the new version/);
+    const format = screen.getByLabelText(/Format for the new version/);
+    expect(platform).toHaveValue("instagram");
+    expect(format).toHaveValue("reel");
+    expect(
+      within(format)
+        .getAllByRole("option")
+        .map((option) => option.textContent),
+    ).toEqual(["Reel · 9:16", "Square Post (1:1) · 1:1"]);
+    expect(
+      screen.getByText(/Reuses the same upload with fresh copy/),
+    ).toBeInTheDocument();
+    fireEvent.change(platform, { target: { value: "youtube" } });
+    expect(
+      within(format)
+        .getAllByRole("option")
+        .map((option) => option.textContent),
+    ).toEqual(["Thumbnail · 16:9"]);
+    expect(
+      screen.getByRole("button", {
+        name: "Create a new YouTube Thumbnail version",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("creates the new version and opens it", async () => {
+    const fetch = mockVariantFetch();
+    render(<Home />);
+    await screen.findByRole("button", {
+      name: "Create a new Instagram Reel version",
+    });
+    const historyReads = () =>
+      fetch.mock.calls.filter(([input]) =>
+        String(input).includes("/generations?"),
+      ).length;
+    const readsBefore = historyReads();
+    fireEvent.change(screen.getByLabelText(/Platform for the new version/), {
+      target: { value: "tiktok" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Create a new TikTok Video version" }),
+    );
+    expect(
+      await screen.findByText(`Generation ${newId}`, {}, { timeout: 4000 }),
+    ).toBeInTheDocument();
+    expect(window.location.hash).toBe(`#job=${newId}`);
+    expect(screen.getByText("Version 2")).toBeInTheDocument();
+    const call = fetch.mock.calls.find(
+      ([url, init]) =>
+        String(url).endsWith(`/api/v1/generations/${id}/variants`) &&
+        init?.method === "POST",
+    );
+    expect(call).toBeDefined();
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({
+      platform: "tiktok",
+      format: "video",
+    });
+    expect(new Headers(call?.[1]?.headers).get("Content-Type")).toBe(
+      "application/json",
+    );
+    // The history strip picks up the new job.
+    await waitFor(() => expect(historyReads()).toBeGreaterThan(readsBefore));
+  });
+
+  it("disables the button while the request is sent", async () => {
+    let answer: (response: Response) => void = () => {};
+    window.history.replaceState(null, "", `#job=${id}`);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/config/platforms"))
+        return new Response(JSON.stringify(config), { status: 200 });
+      if (url.includes("/generations?"))
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      if (init?.method === "POST")
+        return new Promise<Response>((resolve) => {
+          answer = resolve;
+        });
+      return new Response(JSON.stringify(job), { status: 200 });
+    });
+    render(<Home />);
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Create a new Instagram Reel version",
+      }),
+    );
+    expect(
+      await screen.findByRole("button", { name: /Creating your new version/ }),
+    ).toBeDisabled();
+    answer(
+      new Response(JSON.stringify({ detail: "Too many requests." }), {
+        status: 429,
+      }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Too many requests.",
+    );
+    expect(
+      screen.getByRole("button", {
+        name: "Create a new Instagram Reel version",
+      }),
+    ).toBeEnabled();
+  });
+
+  it.each([
+    [409, "Only finished generations can have new versions."],
+    [422, "That format is not available."],
+  ])("shows the API error and stays put on %i", async (status, detail) => {
+    mockVariantFetch({ status, body: { detail } });
+    render(<Home />);
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Create a new Instagram Reel version",
+      }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(detail);
+    expect(window.location.hash).toBe(`#job=${id}`);
+    expect(screen.getByText(`Generation ${id}`)).toBeInTheDocument();
+  });
+
+  it("does not carry one job's version error or pending request to another job", async () => {
+    const other = "66666666-6666-4666-8666-666666666666";
+    let release: (response: Response) => void = () => {};
+    let postCount = 0;
+    window.history.replaceState(null, "", `#job=${id}`);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith("/config/platforms"))
+        return new Response(JSON.stringify(config), { status: 200 });
+      if (url.includes("/generations?"))
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      if (url.endsWith("/variants") && init?.method === "POST") {
+        postCount += 1;
+        if (postCount === 1)
+          return new Response(
+            JSON.stringify({ detail: "The original files are gone." }),
+            { status: 409 },
+          );
+        // The second request is still in flight when the user moves on.
+        return new Promise<Response>((resolve) => (release = resolve));
+      }
+      const jobId = url.includes(other)
+        ? other
+        : url.includes(newId)
+          ? newId
+          : id;
+      return new Response(
+        JSON.stringify({ ...job, id: jobId, parent_id: null, variant: 1 }),
+        { status: 200 },
+      );
+    });
+    render(<Home />);
+    const button = await screen.findByRole("button", {
+      name: /Create a new Instagram Reel version/,
+    });
+    fireEvent.click(button);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The original files are gone.",
+    );
+    // Open another finished job: the first job's error must not follow.
+    window.location.hash = `job=${other}`;
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    expect(
+      await screen.findByText(`Generation ${other}`, {}, { timeout: 4000 }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("The original files are gone.")).toBeNull();
+    // Start a version of this job, then go back before it answers.
+    fireEvent.click(
+      screen.getByRole("button", { name: /Create a new Instagram Reel version/ }),
+    );
+    window.location.hash = `job=${id}`;
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    expect(
+      await screen.findByText(`Generation ${id}`, {}, { timeout: 4000 }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Create a new Instagram Reel version/ }),
+    ).toBeEnabled();
+    release(
+      new Response(
+        JSON.stringify({ ...job, id: newId, status: "queued", variant: 2 }),
+        { status: 202 },
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // The late answer must not pull the user away from the job they chose.
+    expect(window.location.hash).toBe(`#job=${id}`);
+    expect(screen.getByText(`Generation ${id}`)).toBeInTheDocument();
+  }, 12000);
+
+  it("says the music is left out for image formats", async () => {
+    mockVariantFetch(undefined, { has_music: true });
+    render(<Home />);
+    await screen.findByRole("button", {
+      name: "Create a new Instagram Reel version",
+    });
+    expect(screen.queryByText(/music is left out/)).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/Format for the new version/), {
+      target: { value: "feed_square" },
+    });
+    expect(screen.getByText(/music is left out/)).toBeInTheDocument();
+  });
+
+  it("labels later versions but not originals", async () => {
+    mockVariantFetch();
+    render(<Home />);
+    await screen.findByText(`Generation ${id}`);
+    expect(screen.queryByText(/^Version \d/)).not.toBeInTheDocument();
+  });
+});

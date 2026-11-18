@@ -1012,3 +1012,50 @@ input[aria-invalid="true"] {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
+
+/* "Make another version" on a finished result, and version markers. */
+.variant-form {
+  width: 100%;
+  max-width: 370px;
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid #d7dfcc;
+}
+.variant-form h3 {
+  font-size: 12px;
+  font-weight: 600;
+  margin: 0;
+}
+.variant-form .field-label {
+  margin-top: 12px;
+}
+.variant-form .field-row > div {
+  min-width: 0;
+}
+.variant-form .notice {
+  margin: 12px 0 0;
+}
+.variant-form .secondary-button {
+  width: 100%;
+  background: #fff;
+}
+.variant-form .secondary-button:hover:not(:disabled) {
+  background: #e8efde;
+}
+.version-tag {
+  margin-top: 10px;
+  padding: 3px 9px;
+  border-radius: 20px;
+  background: var(--lime);
+  font-size: 10px;
+  font-weight: 600;
+}
+.recent-variant {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: var(--lime);
+  color: var(--ink);
+  font-size: 9px;
+  font-weight: 600;
+}

@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import logging
+import os
 import re
 import secrets
 import shutil
@@ -10,15 +11,15 @@ from typing import Literal
 from uuid import UUID, uuid4
 from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import select, update
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import func, or_, select, update
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 from app.core.config import get_settings
 from app.core.platforms import SUPPORTED_FORMATS, get_format
 from app.db.session import get_session
 from app.models.job import GenerationJob
-from app.schemas.jobs import JobHistory, JobResponse
+from app.schemas.jobs import JobHistory, JobResponse, VariantRequest
 from app.services.ingest.url import UrlRejected, check_url
 from app.services.storage.local import (check_logo_type, check_music_type, create_job_directory, job_directory,
                                         store_image, store_logo, store_music, store_video)
@@ -192,6 +193,93 @@ def retry_generation(job_id: UUID, token: str | None = Owner, session: Session =
     if not result.rowcount:
         raise HTTPException(409, "This generation has already been retried.")
     session.refresh(job)
+    enqueue(job, session)
+    return job
+
+
+MISSING_INPUTS = "The original files for this generation are no longer available. Please create a new generation."
+
+
+def link_or_copy(source: Path, target: Path) -> None:
+    # A hard link costs no space; inputs are never modified in place (writes go through os.replace).
+    try:
+        os.link(source, target)
+    except OSError:
+        shutil.copy2(source, target)
+
+
+def carry_inputs(source: GenerationJob, directory: Path, with_music: bool) -> dict[str, str | None]:
+    """Give a new version its own copy of a finished job's stored inputs, so each job stays self-contained."""
+    origin = job_directory(source.id)
+    def carry(stored: str | None) -> str | None:
+        if not stored:
+            return None
+        path = Path(stored).resolve()
+        if path.parent != origin or not path.is_file():
+            raise HTTPException(409, MISSING_INPUTS)
+        link_or_copy(path, directory / path.name)
+        return str(directory / path.name)
+    paths = {"input_file_path": carry(source.input_file_path), "source_media_path": carry(source.source_media_path),
+             "logo_path": carry(source.logo_path), "music_path": carry(source.music_path) if with_music else None}
+    storyboard = origin / "storyboard.jpg"
+    if source.input_type == "video" and storyboard.is_file():
+        link_or_copy(storyboard, directory / storyboard.name)
+    return paths
+
+
+@router.post("/generations/{job_id}/variants", response_model=JobResponse, status_code=202)
+def create_variant(job_id: UUID, response: Response, body: VariantRequest | None = None,
+                   token: str | None = Owner, session: Session = Depends(get_session)):
+    """Make another version of a finished result from its stored inputs, optionally in another format."""
+    source = find_job(job_id, session, token)
+    platform, format = (body.platform or None, body.format or None) if body else (None, None)
+    if (platform is None) != (format is None):
+        raise HTTPException(422, "Choose both a platform and a format, or neither.")
+    platform, format = platform or source.platform, format or source.format
+    output = get_format(platform, format)
+    if output is None:
+        raise HTTPException(422, "Choose a supported platform and format.")
+    if source.status != "completed":
+        raise HTTPException(409, "Only finished generations can have new versions.")
+    new_id = uuid4()
+    directory = create_job_directory(new_id)
+    try:
+        paths = carry_inputs(source, directory, with_music=output.kind == "video")
+    except HTTPException:
+        shutil.rmtree(directory, ignore_errors=True)
+        raise
+    except OSError as exc:
+        shutil.rmtree(directory, ignore_errors=True)
+        logger.exception("Could not copy inputs for a version of job %s", job_id)
+        raise HTTPException(503, "Media storage is unavailable. Please try again shortly.") from exc
+    root = source.root_id or source.id
+    fields = dict(input_type=source.input_type, source_url=source.source_url,
+                  source_metadata=dict(source.source_metadata) if source.source_metadata else None,
+                  brand_context=dict(source.brand_context or {}), owner_hash=owner_hash(token),
+                  platform=platform, format=format, generation_mode=get_settings().generation_mode,
+                  parent_id=source.id, root_id=root, **paths)
+    family = or_(GenerationJob.id == root, GenerationJob.root_id == root)
+    for attempt in range(3):
+        # Numbers are unique per family (database index); a concurrent request taking ours means recount.
+        try:
+            number = (session.scalar(select(func.max(GenerationJob.variant)).where(family)) or 1) + 1
+            job = GenerationJob(id=new_id, variant=number, **fields)
+            session.add(job)
+            session.commit()
+            session.refresh(job)
+            break
+        except IntegrityError:
+            session.rollback()
+            if attempt < 2:
+                continue
+            shutil.rmtree(directory, ignore_errors=True)
+            raise HTTPException(409, "Another version was created at the same time. Please try again.")
+        except SQLAlchemyError as exc:
+            session.rollback()
+            shutil.rmtree(directory, ignore_errors=True)
+            logger.exception("Could not persist a version of job %s", job_id)
+            raise HTTPException(503, "Storage is unavailable. Please try again shortly.") from exc
+    set_owner_cookie(response, token)
     enqueue(job, session)
     return job
 

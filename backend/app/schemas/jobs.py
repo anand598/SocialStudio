@@ -15,6 +15,9 @@ class JobResponse(BaseModel):
     platform: str
     format: str
     output_kind: Literal["video", "image"]
+    # The job this version was made from (None for originals) and its number within the family.
+    parent_id: UUID | None
+    variant: int
     has_music: bool
     has_logo: bool
     generation_mode: str
@@ -40,8 +43,15 @@ class JobSummary(BaseModel):
     format: str
     output_kind: Literal["video", "image"]
     headline: str | None
+    variant: int
     created_at: datetime
 
 
 class JobHistory(BaseModel):
     items: list[JobSummary]
+
+
+class VariantRequest(BaseModel):
+    """Optional target for a new version; omitted or empty fields keep the source job's format."""
+    platform: str | None = None
+    format: str | None = None
