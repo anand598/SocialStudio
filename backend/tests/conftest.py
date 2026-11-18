@@ -18,9 +18,15 @@ def image_bytes():
     return buffer.getvalue()
 
 
+@pytest.fixture(autouse=True)
+def no_outbox_relay(monkeypatch):
+    """The outbox relay thread only runs in tests that start it explicitly."""
+    monkeypatch.setattr(get_settings(), "outbox_relay_enabled", False)
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.api.generations.enqueue", lambda job, session: None)
+    monkeypatch.setattr("app.services.outbox.send", lambda task, job_id: None)  # no broker in tests
     settings = get_settings()
     monkeypatch.setattr(settings, "requests_per_minute", 10000)
     # The app's limiter outlives a test; a daily quota would accumulate across the whole suite.

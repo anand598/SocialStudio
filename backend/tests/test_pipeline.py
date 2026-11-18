@@ -6,7 +6,6 @@ from app.services.ai.provider import GenerationError
 from app.services.media.renderer import inspect_video
 from app.workers.tasks import expire_stale, generate
 from test_upload import submit
-from app.api.generations import enqueue as original_enqueue
 
 
 def test_real_render_download_and_idempotency(client, image_bytes, monkeypatch):
@@ -63,15 +62,14 @@ def test_stale_job_recovery(client, image_bytes):
     assert result["error_code"] == "JOB_EXPIRED"
 
 
-def test_queue_failure_is_persisted(client, image_bytes, monkeypatch):
+def test_queue_failure_leaves_the_job_queued_for_the_outbox_relay(client, image_bytes, monkeypatch):
     def fail(*args, **kwargs):
         raise ConnectionError("private broker address")
-    monkeypatch.setattr("app.api.generations.enqueue", original_enqueue)
-    monkeypatch.setattr("app.api.generations.generate.apply_async", fail)
+    monkeypatch.setattr("app.services.outbox.send", fail)
     response = submit(client, image_bytes)
     assert response.status_code == 202
-    assert response.json()["error_code"] == "QUEUE_UNAVAILABLE"
-    assert "private" not in response.json()["error_message"]
+    assert response.json()["status"] == "queued"
+    assert response.json()["error_code"] is None and response.json()["error_message"] is None
 
 
 def test_expired_attempt_cannot_update_new_attempt(client, image_bytes):

@@ -58,6 +58,12 @@ class Settings(BaseSettings):
     media_retention_days: int = Field(default=30, ge=0)
     # Mark the job-owner cookie Secure; enable whenever the app is served over HTTPS.
     cookie_secure: bool = False
+    # Outbox relay: a thread in each API process that publishes queue messages the API could not
+    # publish at once (broker down, or a crash right after commit). Failed publishes back off
+    # exponentially (2 s, 4 s, ...) up to the cap.
+    outbox_relay_enabled: bool = True
+    outbox_poll_seconds: float = Field(default=2, gt=0)
+    outbox_max_backoff_seconds: int = Field(default=60, ge=2)
 
 
 @lru_cache
