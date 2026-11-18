@@ -5,6 +5,7 @@ from PIL import Image, ImageChops
 from app.core.platforms import get_format
 from app.schemas.content import Scene, SocialContent
 from app.services.media import renderer
+from app.services.media.promo import layout
 
 
 def content(hook="Glossy. Curved. Quiet.", first="Glossy finish."):
@@ -82,7 +83,7 @@ def test_portrait_headline_fills_its_band(tmp_path):
     product = tmp_path / "product.jpg"
     Image.new("RGB", (600, 800), "#333333").save(product)
     poster = renderer.compose_frame(output, str(product), "Studio sample. Demo only.", "", cta="Explore the collection")
-    band = (0, renderer.layout(output).card_area[3], output.width, output.height)
+    band = (0, layout(output).card_area[3], output.width, output.height)
     assert white_text_span(poster, band) >= 0.06
 
 

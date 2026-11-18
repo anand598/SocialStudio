@@ -4,6 +4,8 @@ Turn a product **image, video, or product-page URL** into platform-ready content
 
 **Implemented end to end:** input (upload or URL) → persisted job → background fetch/analysis/copy → real media rendered at the selected format's exact dimensions → preview/download and caption copy/download. The page restores its job from the URL after refresh.
 
+> **Reviewers, start here:** the [submission summary](docs/submission.md) covers the live app (`<LIVE_URL>`), the demo video (`<VIDEO_LINK>`), what is real versus simulated, decisions and trade-offs, failure handling, security, known issues, and next steps, in about five minutes of reading. This README covers setup and reference material.
+
 | Platform | Format | Output | Dimensions |
 | --- | --- | --- | --- |
 | Instagram | Reel | H.264 MP4 | 1080 × 1920 (9:16) |
@@ -22,9 +24,42 @@ Turn a product **image, video, or product-page URL** into platform-ready content
 
 **Brand kit (optional, every input and format):** a brand colour fills the CTA button and accent bar exactly and tints the backdrop with its hue; the button label switches between white and dark ink by WCAG contrast, and a brand colour too dark to read on the backdrop falls back to white for the brand name and accent bar. A logo (transparent PNG recommended) is trimmed to its visible mark, stored as a clean PNG, and drawn where the brand name would be. Without either, the palette comes from the product photo.
 
-The platform registry (`backend/app/core/platforms.py`) is the single source of truth for dimensions, output kind, caption length, and hashtag limits (for example, YouTube ≤ 3 hashtags plus a title; TikTok ≤ 5). Rendered output is verified against it before publication.
+The platform registry (`backend/app/core/platforms.py`) is the single source of truth for dimensions, output kind, caption length, and hashtag limits (Instagram allows at most 5 hashtags per post since December 2025; for TikTok and YouTube the app applies its own house limits of 5 and 3 hashtags, plus a YouTube title of up to 100 characters). Rendered output is verified against it before publication.
 
 **Two explicit modes:** `GENERATION_MODE=ollama` uses local vision/text inference. `GENERATION_MODE=demo` uses deterministic generic copy and no AI analysis. Both render real media from the user's image, video, or product-page image. The UI and result metadata label demo mode. Ollama does not synthesize video; Pillow composes every frame from the user's media and FFmpeg encodes it.
+
+## Architecture
+
+```
+Browser ─▶ Next.js UI ─(/api proxy)─▶ FastAPI ──job + outbox row (one transaction)──▶ PostgreSQL
+                                         │  publish job id (fast path; relay retries)
+                                         ▼
+                                   Redis broker ─▶ Celery worker: fetch URL → analyse (Ollama) → write copy → render (Pillow/FFmpeg) → validate
+                                                   Celery beat: expire stuck jobs (1 min) · purge expired media (1 h)
+```
+
+The API validates and stores the input, writes the job, and returns 202 at once; a worker does the slow work and saves every stage, which the UI polls. PostgreSQL is the source of truth (Celery stores no results), media lives in per-job folders, and a format registry drives dimensions and text limits everywhere. Details: [architecture](docs/architecture.md).
+
+## Technology choices
+
+| Choice | Why | Alternative considered |
+| --- | --- | --- |
+| FastAPI + Pydantic | Typed request/response models and validation at every boundary, async uploads | Django REST: heavier for a small API |
+| Celery + Redis, with a transactional outbox | Rendering takes seconds to minutes, so it runs outside the request; the outbox makes the hand-off to the queue survive broker outages | FastAPI background tasks: lost on restart, no retries |
+| PostgreSQL + Alembic | Durable job state, conditional updates for safe concurrency, versioned migrations | SQLite: used only for the offline local demo |
+| Ollama with a local vision model (`qwen3.5:4b`) | No API keys or spend, product media never leaves the server, structured JSON output | Hosted LLM APIs: faster, but cost and data leave the server |
+| Pillow + FFmpeg rendering from the user's media | Exact platform dimensions every time and the real product on screen | Text-to-video models: slow, costly, and unreliable at showing the actual product |
+| Next.js + React + TypeScript + Tailwind | One typed UI with a same-origin `/api` proxy, so cookies and CORS stay simple | A separate SPA plus CORS |
+| Owner cookie instead of accounts | Private results without building authentication; works for `<video>`/`<img>`/downloads, which cannot send headers | User accounts: the top next step |
+
+## Assumptions
+
+- The person uploading owns the product media and any music, and has the right to post them.
+- One product per job; copy is written in English.
+- Outputs are short promotional pieces: videos are capped at 30 s, and posting to the platforms is out of scope (the user downloads and posts).
+- A single host runs the stack; API and worker share its disk (object storage is the step to several hosts).
+- AI copy is a draft: the user reviews it before publishing, and the app lists the facts to confirm.
+- Reviewers and early users are trusted enough for per-browser privacy; user accounts come next.
 
 ## Quick local demo — no Docker or model download
 
@@ -197,13 +232,13 @@ cd backend
 .venv/bin/python -m scripts.check_ollama --output ../storage/ollama-check.json
 ```
 
-GitHub Actions configuration runs backend/render tests and frontend tests/builds on pushes and pull requests. A remote CI run is not claimed until an actual repository run succeeds.
+GitHub Actions runs `ruff`, the backend and render tests, and the frontend tests, typecheck, and production build on every push and pull request.
 
 ## Security and operating limits
 
 Uploads are limited by bytes, MIME, extension, decoded content, frame count, and pixel count. Images are normalized with metadata stripped and stored outside the frontend under UUID directories. Downloads validate the requested job and its asset directory. FFmpeg uses argument arrays, fixed generated paths, timeouts, and bounded threads. Output must pass dimensions/codec/duration checks and a full decode before completion.
 
-**Results are private to the browser that created them.** Creating a job sets a random `HttpOnly`, `SameSite=Lax` owner cookie (30 days); the job stores only its SHA-256 hash. Status, content, preview, download, thumbnail, and retry all require the matching cookie; anyone else, including someone holding the job link, gets the same 404 as for a missing job, so existence is not revealed. This is per-browser ownership, **not user accounts**: clearing cookies or switching browsers loses access, and jobs created before migration `0005` are no longer served. A real public deployment still needs HTTPS (`COOKIE_SECURE=true`), an ingress body limit, shared rate limits/quotas, reviewer access or accounts, and monitoring. Generation requests are rate-limited per client (per minute and per UTC day), counted in Redis so all API processes share one limit; forwarded client addresses are trusted only from `TRUSTED_PROXIES`, and if Redis is unreachable requests are allowed (ingress limits remain the outer guard). Product URL fetching is an SSRF surface and is hardened: only http/https on default ports, no embedded credentials, `localhost`/`.internal` names refused, every DNS answer must be globally routable (loopback, RFC 1918, link-local/cloud metadata, CGNAT, multicast, IPv4-mapped forms all rejected), the connection is pinned to the validated IP with Host/SNI preserved (no DNS rebinding window), redirects are followed manually and re-validated, bodies are size-capped and time-limited, and proxies from the environment are ignored. The API rejects obviously unsafe URLs at submission; the worker re-validates every hop. Uploaded videos are probed and re-encoded by FFmpeg with timeouts and thread limits; a hostile-media deployment should additionally sandbox the worker.
+**Results are private to the browser that created them.** Creating a job sets a random `HttpOnly`, `SameSite=Lax` owner cookie (30 days); the job stores only its SHA-256 hash. Status, content, preview, download, thumbnail, and retry all require the matching cookie; anyone else, including someone holding the job link, gets the same 404 as for a missing job, so existence is not revealed. This is per-browser ownership, **not user accounts**: clearing cookies or switching browsers loses access, and jobs created before migration `0005` are no longer served. A real public deployment still needs HTTPS (`COOKIE_SECURE=true`), an ingress body limit, reviewer access or accounts, and monitoring. Generation requests are rate-limited per client (per minute and per UTC day), counted in Redis so all API processes share one limit; forwarded client addresses are trusted only from `TRUSTED_PROXIES`, and if Redis is unreachable requests are allowed (ingress limits remain the outer guard). Product URL fetching is an SSRF surface and is hardened: only http/https on default ports, no embedded credentials, `localhost`/`.internal` names refused, every DNS answer must be globally routable (loopback, RFC 1918, link-local/cloud metadata, CGNAT, multicast, IPv4-mapped forms all rejected), the connection is pinned to the validated IP with Host/SNI preserved (no DNS rebinding window), redirects are followed manually and re-validated, bodies are size-capped and time-limited, and proxies from the environment are ignored. The API rejects obviously unsafe URLs at submission; the worker re-validates every hop. Uploaded videos are probed and re-encoded by FFmpeg with timeouts and thread limits; a hostile-media deployment should additionally sandbox the worker.
 
 ## Status and delivery
 

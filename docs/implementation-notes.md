@@ -1,5 +1,7 @@
 # Implementation log
 
+> **Chronological build log.** Each phase records what was true when it was written, so early phases describe limitations that later phases removed. For the current state, read the [submission summary](submission.md).
+
 ## Phase 0 — inspected 2026-11-16
 
 The workspace initially contained only the handover Markdown. No starter source or Git repository existed. The assessment PDF was subsequently reviewed and confirmed that one complete input/output workflow is sufficient and an explicitly simulated generation path is allowed.
@@ -211,4 +213,8 @@ Tests: 9 backend (JSON-LD fields and precedence, ImageObject images, malformed a
 
 **Live testing and review.** With the broker down, a job stayed queued with no error; when Redis and a worker came back, the relay delivered it within seconds. Jobs created during an outage were delivered even after the API itself was restarted. The same run showed the first problem: each request waited about 6 s for the broker before answering, so after a failed publish the fast path now pauses for 10 s and hands messages straight to the relay. An independent review then found that this was only the "connection refused" case: kombu's Redis transport ignores `broker_connection_timeout`, so against an unreachable broker a publish blocked for 75–127 s (or forever if Redis hangs), tying up request threads and the relay. The transport options now set socket connect and read timeouts (3 s and 5 s; verified that an idle worker still receives jobs); a request against a blackholed broker now returns in 3.6 s instead of 75. The review also found that a failed read right after a successful commit deleted the media of a job that would still run (the read now happens outside the cleanup), and the IPv6 rotation issue above. It confirmed the proxy walk, the Redis counting, the outbox's atomicity, and the claim logic on PostgreSQL's isolation level.
 
-Tests: 39 new backend tests (18 rate limits including a real-Redis integration test, 22 outbox, readiness). Totals: 225 backend (plus 1 skipped without Redis) and 42 frontend tests.
+Tests: rate limits (`test_rate_limits.py`, including a real-Redis integration test), the outbox (`test_outbox.py`), and readiness (`test_health.py`).
+
+## Pre-submission review fixes — 2026-11-19
+
+A fresh agent reviewed the repository as an assessment reviewer would, with only the brief and the code. Fixed from its findings: Instagram's hashtag limit (now 5 per post, its rule since December 2025; TikTok's and YouTube's hashtag limits and the 30 s video cap are now described as the app's own choices); one request-size limit derived from the per-type limits (file, music, logo, plus 1 MB of form overhead; 123 MB by default) with the Next.js proxy and Caddy raised to 125 MB and a test that reads both proxies' settings; `ruff` added to CI after removing unused imports; the local launcher now announces the address only once the app answers and, if a service exits, names it and prints the end of its log; and stale statements across the docs.

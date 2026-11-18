@@ -1,6 +1,5 @@
 """Every registered format renders at its exact platform dimensions, from images and videos."""
 import subprocess
-from uuid import UUID
 import pytest
 from PIL import Image
 from app.core.platforms import SUPPORTED_FORMATS, compose_post_text, get_format
@@ -179,3 +178,13 @@ def test_post_text_does_not_duplicate_hashtags_or_cta():
         "title": "Elegant Black Teapot", "caption": "Explore the collection", "call_to_action": "Explore the collection",
         "hashtags": ["#Teapot"]})
     assert youtube == "Title: Elegant Black Teapot\n\nExplore the collection\n\n#Teapot"
+
+
+def test_instagram_posts_keep_at_most_five_hashtags():
+    # Instagram cut its limit from 30 to 5 hashtags per post and Reel in December 2025.
+    content = {"caption": "Meet the lamp.", "call_to_action": "Shop now",
+               "hashtags": [f"#Tag{n}" for n in range(1, 9)]}
+    for format in ("reel", "feed_portrait", "feed_square"):
+        text = compose_post_text(get_format("instagram", format), content)
+        assert text.endswith("#Tag1 #Tag2 #Tag3 #Tag4 #Tag5"), format
+        assert "#Tag6" not in text

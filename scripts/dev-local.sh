@@ -33,6 +33,26 @@ ui_pid=$!
 cleanup() { kill "$api_pid" "$worker_pid" "$ui_pid" 2>/dev/null || true; }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
+# Name the service that stopped and show the end of its log (they are in files, not on screen).
+stopped() {
+  echo "The $1 service stopped. Last lines of $runtime_dir/logs/$1.log:" >&2
+  tail -n 20 "$runtime_dir/logs/$1.log" >&2
+  exit 1
+}
+check_services() {
+  kill -0 "$api_pid" 2>/dev/null || stopped api
+  kill -0 "$worker_pid" 2>/dev/null || stopped worker
+  kill -0 "$ui_pid" 2>/dev/null || stopped frontend
+}
+# Announce the address only once the API and the UI answer.
+for _ in $(seq 1 90); do
+  check_services
+  if curl -sf -o /dev/null "http://127.0.0.1:$demo_api_port/api/v1/health" &&
+     curl -sf -o /dev/null "http://127.0.0.1:$demo_ui_port/"; then
+    break
+  fi
+  sleep 1
+done
 if [ "$GENERATION_MODE" = "demo" ]; then
   echo "Demo mode: http://localhost:$demo_ui_port — deterministic copy, real video rendering."
 else
@@ -40,11 +60,6 @@ else
 fi
 echo "Logs: $runtime_dir/logs. Ctrl-C stops these processes."
 while true; do
-  for service_pid in "$api_pid" "$worker_pid" "$ui_pid"; do
-    if ! kill -0 "$service_pid" 2>/dev/null; then
-      echo "A service stopped. Inspect the logs above." >&2
-      exit 1
-    fi
-  done
+  check_services
   sleep 2
 done

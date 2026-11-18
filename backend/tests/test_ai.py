@@ -1,5 +1,3 @@
-import json
-import httpx
 import pytest
 from app.services.ai.provider import DemoProvider, GenerationError, OllamaProvider
 from app.schemas.content import ProductAnalysis

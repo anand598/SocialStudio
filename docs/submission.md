@@ -6,7 +6,7 @@ Social Studio turns a product **image, video, or product-page link** into ready-
 | --- | --- |
 | Live application | **`<LIVE_URL>`** |
 | Demo video (2 min 12 s, captioned, silent) | **`<VIDEO_LINK>`** (`delivery/walkthrough.mp4`) |
-| Source code | This repository; one commit per feature |
+| Source code | This repository. The first commits are large (scaffold, then inputs and formats together); from job history onward there is one commit per feature, each saying why and how it was verified |
 | README: setup, architecture, technology choices, assumptions, limitations | [README](../README.md), [architecture](architecture.md), [deployment](deployment.md) |
 | Implementation notes: real vs simulated, known issues, trade-offs, next steps | This page; the phase-by-phase log is in [implementation notes](implementation-notes.md) |
 
@@ -25,7 +25,7 @@ Social Studio turns a product **image, video, or product-page link** into ready-
 | TikTok | Video | MP4 | 1080×1920 |
 | YouTube | Short / Video / Thumbnail | MP4 / MP4 / JPEG | 1080×1920 / 1920×1080 / 1280×720 |
 
-Each format also carries the platform's text rules, which are enforced on the post text: TikTok allows at most 5 hashtags; YouTube allows at most 3 plus a title of up to 100 characters; caption lengths are capped.
+Each format also carries text limits, enforced on the post text. Instagram allows at most 5 hashtags per post (its limit since December 2025). For TikTok and YouTube the app applies its own house limits, chosen for discoverability rather than imposed by the platforms: at most 5 and 3 hashtags respectively, and a YouTube title of up to 100 characters. Videos are capped at 30 s by design, although Shorts may now run up to 3 minutes.
 
 ## The brief, point by point
 

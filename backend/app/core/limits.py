@@ -26,6 +26,14 @@ DAY = 86_400
 MINUTE_DETAIL = "Too many generation requests. Please wait a minute and try again."
 
 
+def request_size_limit(settings) -> int:
+    """Largest request the API accepts: the biggest product file plus an optional music track and
+    logo, plus 1 MB for multipart framing and form fields. The Next.js proxy and Caddy must allow at
+    least this much (tests/test_upload.py checks both), or valid uploads are cut off mid-request."""
+    largest = max(settings.max_upload_size_mb, settings.max_video_upload_size_mb)
+    return (largest + settings.max_music_upload_size_mb + settings.max_logo_upload_size_mb + 1) * 1024 * 1024
+
+
 # ---------- client identity ----------
 
 def _parse_ip(value: str):
@@ -205,10 +213,8 @@ class UploadLimitsMiddleware:
         await self._limit_size(settings, scope, receive, send)
 
     async def _limit_size(self, settings, scope, receive, send):
-        # Per-type limits are enforced while streaming; this is the outer bound for any upload
-        # (the largest product file plus an optional music track).
-        largest = max(settings.max_upload_size_mb, settings.max_video_upload_size_mb)
-        limit = (largest + settings.max_music_upload_size_mb) * 1024 * 1024 + 64 * 1024
+        # Per-type limits are enforced while streaming; this is the outer bound for any request.
+        limit = request_size_limit(settings)
         headers = dict(scope["headers"])
         try:
             declared = int(headers.get(b"content-length", b"0"))

@@ -5,7 +5,6 @@ Without them, the palette still comes from the product photo and the brand name 
 import io
 import subprocess
 from uuid import UUID
-import pytest
 from PIL import Image
 from app.core.config import get_settings
 from app.core.platforms import get_format

@@ -31,7 +31,7 @@ URL fetching runs in the worker, not the request: it is slow, untrusted network 
 
 ## State and recovery
 
-Jobs move from queued through validating, fetching (URL inputs), analyzing, writing_copy, rendering, finalizing, and completed; safe failures are persisted. AI network/server errors receive at most two task retries; invalid structured output has one repair attempt. Validation errors are not retried automatically. Queue publication failure becomes an explicit failed job.
+Jobs move from queued through validating, fetching (URL inputs), analyzing, writing_copy, rendering, finalizing, and completed; safe failures are persisted. AI network/server errors receive at most two task retries; structured output that is cut off is retried up to twice, and other invalid output gets one repair prompt. Validation errors are not retried automatically. A broker outage leaves jobs queued for the outbox relay (below) instead of failing them.
 
 An atomic claim and per-attempt UUID guard prevent duplicate task deliveries or old workers from overwriting a newer attempt. Attempt-specific artifacts avoid write collisions. `updated_at` is refreshed at each stage. Abandoned queued/processing jobs expire after the configured timeout, through both a beat task and status retrieval, and can be retried manually. Expiry is a failure/retry strategy, not automatic resumption. PostgreSQL remains authoritative; no Celery result backend is needed.
 

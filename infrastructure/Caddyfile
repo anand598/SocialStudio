@@ -1,7 +1,7 @@
 {$SITE_ADDRESS} {
     encode zstd gzip
     request_body {
-        max_size 110MB
+        max_size 125MB
     }
     basic_auth {
         {$REVIEW_USERNAME} {$REVIEW_PASSWORD_HASH}

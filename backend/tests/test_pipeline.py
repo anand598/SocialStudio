@@ -1,8 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-import pytest
 from app.models.job import GenerationJob
-from app.services.ai.provider import GenerationError
 from app.services.media.renderer import inspect_video
 from app.workers.tasks import expire_stale, generate
 from test_upload import submit

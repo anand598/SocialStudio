@@ -19,7 +19,7 @@ from app.schemas.content import SocialContent
 from app.services.ai.provider import GenerationError
 from app.services.media.ffmpeg import (AUDIO_OUT, encode_frames, has_audio, music_filter, probe, require_tools, run,
                                        video_stream)
-from app.services.media.promo import FPS, Promo, fit_logo, hex_rgb, layout, text_on
+from app.services.media.promo import FPS, Promo, fit_logo, hex_rgb, text_on
 from app.services.media.typography import BOLD_FONTS, REGULAR_FONTS, fit_text, font, wrap_text  # noqa: F401
 from app.services.storage.local import job_directory
 
