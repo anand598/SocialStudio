@@ -20,8 +20,10 @@ def image_bytes():
 
 @pytest.fixture(autouse=True)
 def no_outbox_relay(monkeypatch):
-    """The outbox relay thread only runs in tests that start it explicitly."""
+    """The outbox relay thread only runs in tests that start it explicitly, and every test starts with
+    the fast path's broker pause cleared (it is process state)."""
     monkeypatch.setattr(get_settings(), "outbox_relay_enabled", False)
+    monkeypatch.setattr("app.services.outbox._broker_down_until", 0.0)
 
 
 @pytest.fixture

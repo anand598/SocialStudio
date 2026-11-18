@@ -13,6 +13,10 @@ relay publishes it at a time; this works the same on PostgreSQL and SQLite. A ra
 that succeeded but whose "sent" mark did not commit) is harmless: the worker atomically claims only
 queued jobs. Messages whose job is no longer queued, e.g. expired by the stale-job sweep, are retired
 without being published.
+
+A publish to a dead broker waits for its connection timeout (seconds), so after a failure the fast path
+pauses for BROKER_PAUSE_SECONDS: requests hand their message straight to the relay instead of waiting.
+The relay ignores the pause, keeps retrying with backoff, and lifts it on its first successful publish.
 """
 import logging
 import threading
@@ -35,6 +39,9 @@ LEASE_SECONDS = 30
 BATCH_SIZE = 50
 SENT_RETENTION = timedelta(days=1)
 PURGE_EVERY_SECONDS = 600
+BROKER_PAUSE_SECONDS = 10
+# Monotonic time until which the fast path skips the broker (per process; set after a failed publish).
+_broker_down_until = 0.0
 
 
 def utcnow() -> datetime:
@@ -63,9 +70,11 @@ def add(session: Session, job_id: UUID, task: str = GENERATE) -> OutboxMessage:
 def deliver(session: Session, message_id: UUID, task: str, job_id: UUID, attempts: int, now: datetime) -> bool:
     """Publish a message this process holds, then record the outcome. `attempts` includes this one."""
     pending = (OutboxMessage.id == message_id, OutboxMessage.sent_at.is_(None))
+    global _broker_down_until
     try:
         send(task, job_id)
     except Exception as exc:
+        _broker_down_until = time.monotonic() + BROKER_PAUSE_SECONDS
         delay = backoff(attempts)
         session.execute(update(OutboxMessage).where(*pending).values(
             attempts=attempts, next_attempt_at=now + timedelta(seconds=delay),
@@ -74,6 +83,7 @@ def deliver(session: Session, message_id: UUID, task: str, job_id: UUID, attempt
         logger.warning("Could not publish job %s (attempt %s, %s); retrying in %ss",
                        job_id, attempts, type(exc).__name__, delay)
         return False
+    _broker_down_until = 0.0
     session.execute(update(OutboxMessage).where(*pending).values(attempts=attempts, sent_at=utcnow(), last_error=None))
     session.commit()
     return True
@@ -83,6 +93,14 @@ def publish_now(session: Session, message: OutboxMessage) -> bool:
     """Fast path, called right after the message was committed. Never raises: the job is already saved
     and stays queued, so on any failure the message is simply left for the relay."""
     try:
+        if time.monotonic() < _broker_down_until:
+            # The broker just failed: don't make this request wait on it. Release the lease so the
+            # relay, which keeps retrying with backoff, takes the message on its next pass.
+            session.execute(update(OutboxMessage).where(OutboxMessage.id == message.id,
+                                                        OutboxMessage.sent_at.is_(None))
+                            .values(next_attempt_at=utcnow()))
+            session.commit()
+            return False
         return deliver(session, message.id, message.task, message.job_id, 1, utcnow())
     except SQLAlchemyError:
         session.rollback()

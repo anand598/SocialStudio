@@ -32,6 +32,7 @@ class Broker:
 def broker(client, monkeypatch):
     fake = Broker()
     monkeypatch.setattr("app.services.outbox.send", fake)
+    monkeypatch.setattr(outbox, "_broker_down_until", 0.0)  # the breaker is process state
     return fake
 
 
@@ -182,14 +183,13 @@ def test_backoff_doubles_and_is_capped(monkeypatch):
 def test_relay_backs_off_and_stops_its_pass_at_the_first_failure(client, image_bytes, broker):
     broker.up = False
     ids = [submit(client, image_bytes).json()["id"] for _ in range(3)]
-    assert broker.attempts == 3  # one fast-path attempt each
+    assert broker.attempts == 1  # later requests skip the broker that just failed
     later = utcnow() + timedelta(minutes=5)
     assert relay(client, later) == 0
-    assert broker.attempts == 4  # one failure ends the pass: no storm against a dead broker
-    attempted = [m for m in messages(client) if m.attempts == 2]
-    assert len(attempted) == 1
-    delay = (aware(attempted[0].next_attempt_at) - later).total_seconds()
-    assert delay == pytest.approx(outbox.backoff(2), abs=1)
+    assert broker.attempts == 2  # one failure ends the pass: no storm against a dead broker
+    [attempted] = [m for m in messages(client) if aware(m.next_attempt_at) > later]
+    delay = (aware(attempted.next_attempt_at) - later).total_seconds()
+    assert delay == pytest.approx(outbox.backoff(attempted.attempts), abs=1)
     broker.up = True
     assert relay(client, later + timedelta(minutes=5)) == 3
     assert sorted(job_id for _, job_id in broker.sent) == sorted(ids)
@@ -323,3 +323,34 @@ def test_relay_survives_a_failing_pass(client, broker, monkeypatch):
         time.sleep(0.01)
     worker.stop()
     assert len(calls) >= 3 and not worker.running
+
+
+def test_requests_do_not_wait_on_a_broker_that_just_failed(client, image_bytes, broker):
+    # Each publish to a dead broker waits for its connection timeout (seconds). After one failure the
+    # fast path pauses and hands new messages straight to the relay instead.
+    broker.up = False
+    submit(client, image_bytes)
+    second = submit(client, image_bytes).json()
+    assert broker.attempts == 1
+    assert second["status"] == "queued" and second["error_code"] is None
+    [message] = messages(client, second["id"])
+    assert message.sent_at is None and message.attempts == 0
+    assert aware(message.next_attempt_at) <= utcnow()  # due for the relay at once, not after a lease
+
+
+def test_fast_path_resumes_once_the_relay_reaches_the_broker(client, image_bytes, broker):
+    broker.up = False
+    submit(client, image_bytes)
+    broker.up = True
+    assert relay(client, utcnow() + timedelta(minutes=1)) == 1
+    later = submit(client, image_bytes).json()["id"]
+    assert ("social.generate", later) in broker.sent  # published by the request itself again
+
+
+def test_fast_path_tries_the_broker_again_after_the_pause(client, image_bytes, broker, monkeypatch):
+    broker.up = False
+    submit(client, image_bytes)
+    monkeypatch.setattr(outbox, "_broker_down_until", time.monotonic() - 1)  # pause over
+    broker.up = True
+    later = submit(client, image_bytes).json()["id"]
+    assert ("social.generate", later) in broker.sent
