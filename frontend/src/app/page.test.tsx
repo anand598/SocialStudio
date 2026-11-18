@@ -92,7 +92,13 @@ function mockFetch(
   return vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
     const url = String(input);
     return new Response(
-      JSON.stringify(url.endsWith("/config/platforms") ? config : result),
+      JSON.stringify(
+        url.endsWith("/config/platforms")
+          ? config
+          : url.includes("/generations?")
+            ? { items: [] }
+            : result,
+      ),
       { status: 200 },
     );
   });
@@ -179,7 +185,9 @@ it("polls from queued through rendering to completion", async () => {
   let statusReads = 0;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
     let result: unknown = config;
-    if (!String(input).endsWith("/config/platforms")) {
+    if (String(input).includes("/generations?")) {
+      result = { items: [] };
+    } else if (!String(input).endsWith("/config/platforms")) {
       statusReads += 1;
       result =
         statusReads === 1
@@ -371,6 +379,48 @@ it("follows #job changes without a reload (back/forward between jobs)", async ()
   expect(
     await screen.findByText("A blank canvas. A world of possibility."),
   ).toBeInTheDocument();
+});
+
+it("lists this browser's recent creatives and opens one from the list", async () => {
+  const earlier = "44444444-4444-4444-8444-444444444444";
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const url = String(input);
+    if (url.endsWith("/config/platforms"))
+      return new Response(JSON.stringify(config), { status: 200 });
+    if (url.includes("/generations?"))
+      return new Response(
+        JSON.stringify({
+          items: [
+            {
+              id: earlier,
+              status: "completed",
+              stage: "completed",
+              progress: 100,
+              input_type: "image",
+              platform: "youtube",
+              format: "thumbnail",
+              output_kind: "image",
+              headline: "Desk tour",
+              created_at: "2026-11-18T10:00:00Z",
+            },
+          ],
+        }),
+        { status: 200 },
+      );
+    return new Response(JSON.stringify({ ...job, id: earlier }), {
+      status: 200,
+    });
+  });
+  render(<Home />);
+  const list = await screen.findByRole("list", { name: "Recent creatives" });
+  const link = within(list).getByRole("link", { name: /Desk tour/ });
+  expect(link).toHaveTextContent("YouTube Thumbnail");
+  fireEvent.click(link);
+  window.dispatchEvent(new HashChangeEvent("hashchange"));
+  expect(
+    await screen.findByText(`Generation ${earlier}`, {}, { timeout: 4000 }),
+  ).toBeInTheDocument();
+  expect(link).toHaveAttribute("aria-current", "page");
 });
 
 it("explains and stops polling when a job link is not available in this browser", async () => {

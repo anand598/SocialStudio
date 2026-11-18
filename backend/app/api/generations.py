@@ -8,9 +8,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 from uuid import UUID, uuid4
-from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Response, UploadFile
+from fastapi import APIRouter, Cookie, Depends, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
@@ -18,7 +18,7 @@ from app.core.config import get_settings
 from app.core.platforms import SUPPORTED_FORMATS, get_format
 from app.db.session import get_session
 from app.models.job import GenerationJob
-from app.schemas.jobs import JobResponse
+from app.schemas.jobs import JobHistory, JobResponse
 from app.services.ingest.url import UrlRejected, check_url
 from app.services.storage.local import (check_music_type, create_job_directory, job_directory, store_image,
                                         store_music, store_video)
@@ -141,6 +141,18 @@ def find_job(job_id: UUID, session: Session, token: str | None) -> GenerationJob
 
 
 Owner = Depends(owner_token)
+
+
+@router.get("/generations", response_model=JobHistory)
+def list_generations(limit: int = Query(20, ge=1, le=50), token: str | None = Owner,
+                     session: Session = Depends(get_session)):
+    """The calling browser's own jobs, newest first. No owner cookie means no history."""
+    if not token:
+        return {"items": []}
+    expire_stale(session)
+    jobs = session.scalars(select(GenerationJob).where(GenerationJob.owner_hash == owner_hash(token))
+                           .order_by(GenerationJob.created_at.desc()).limit(limit))
+    return {"items": list(jobs)}
 
 
 @router.get("/generations/{job_id}", response_model=JobResponse)

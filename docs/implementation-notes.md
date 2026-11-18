@@ -87,7 +87,7 @@ After the fixes the live browser suite passed: image → Reel 34 s and 4:5 18 s,
 4. Add a transactional outbox for atomic database-to-broker delivery; current publish failure plus expiry is recoverable but not an exactly-once delivery guarantee.
 5. Local media needs shared storage on one host. Add S3-compatible storage/signed URLs before multi-host scaling. Failed/retried artifacts currently have no automatic retention cleanup.
 6. Review AI claims manually; schema validation and prompts cannot guarantee factual accuracy. Non-Latin font coverage depends on the configured font. No copyright music is bundled.
-7. History UI, per-user brand kits, multi-variant generation, and generative image/video synthesis are pending. Existing jobs remain accessible through their saved URL, not an account history.
+7. Per-user brand kits, multi-variant generation, and generative image/video synthesis are pending. History is per browser (owner cookie), not per account.
 8. URL ingestion depends on Open Graph/Twitter image tags; many large retailers block automated fetches (reported as `URL_BLOCKED` with an upload suggestion). JSON-LD product data and headless rendering for JavaScript-only pages are not implemented.
 9. Video understanding samples four frames and ignores audio; long clips with many products or spoken claims need denser sampling and speech-to-text (e.g. Whisper) before copywriting.
 10. Source video is re-encoded by FFmpeg on the worker. Production handling of hostile media should add sandboxing (seccomp/gVisor or an isolated transcoding service) and a per-job CPU budget.
@@ -136,3 +136,11 @@ Video formats accept an optional music upload (`music` form field; MP3, M4A, or 
 Rendering: for image → promo video, the track is loudness-normalized (−16 LUFS), faded in over 0.6 s and out over 1.5 s, and padded with silence or trimmed so it lasts exactly as long as the video. For video input, the music is normalized lower (−20 LUFS, then −9 dB) and mixed under the clip's own sound; if the clip is silent it plays alone. Music never makes a video longer. The UI shows the field only for video formats, with a reminder to use music the user has the rights to.
 
 Tests: 9 backend (formats, rejection and cleanup, full-length padded audio that fades in, mixing under source audio, config limits) and 2 frontend. Verified live: picsum laptop URL plus a synthetic music track → Reel with a 13 s video and a 13 s AAC track (mean −18 dB) in 53 s. Totals: 108 backend and 14 frontend tests.
+
+## Phase 14 — recent creatives (job history) — 2026-11-18
+
+Before this, a past result could be reopened only from its saved `#job=` link. `GET /api/v1/generations` now lists the calling browser's own jobs, newest first (default 20, at most 50), using the existing owner cookie: no cookie returns an empty list and sets none, and other browsers' jobs never appear. Rows are deliberately light (status, platform, format, output kind, and a headline taken from the completed copy's title or hook) and omit analysis, captions, and file paths, so the full result still goes through the per-job, access-checked endpoints. Migration `0007` indexes `(owner_hash, created_at)` for this query.
+
+The UI shows a "Recent creatives" strip under the workspace: thumbnails for finished results, status for running or failed ones, and the open result outlined. Each card is a plain `#job=` link, so it reuses the existing hash-restore and polling path rather than a second loading mechanism. The list refreshes when the open job is created or changes state. History is non-critical: if it is empty or fails to load, the section is hidden and creation is unaffected. The API helpers moved from `page.tsx` to `src/lib/api.ts` so the component shares them.
+
+Tests: 6 backend (ordering, isolation between browsers, no-cookie behaviour, limit bounds, headline, omitted fields) and 6 frontend (component behaviour plus opening a past result from the page). Verified live in demo mode through the Next.js proxy with headless Chrome at 1280 px and 390 px. Totals: 115 backend and 20 frontend tests.

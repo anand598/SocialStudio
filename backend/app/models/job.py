@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Any
-from sqlalchemy import CheckConstraint, DateTime, Integer, JSON, String, Text, func
+from sqlalchemy import CheckConstraint, Index, DateTime, Integer, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 from app.core.platforms import compose_post_text, get_format
 from app.db.base import Base
@@ -12,6 +12,7 @@ class GenerationJob(Base):
     __table_args__ = (
         CheckConstraint("status IN ('queued', 'processing', 'completed', 'failed')", name="job_status"),
         CheckConstraint("progress BETWEEN 0 AND 100", name="job_progress"),
+        Index("ix_generation_jobs_owner_created", "owner_hash", "created_at"),
     )
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     run_token: Mapped[uuid.UUID | None] = mapped_column()
@@ -57,6 +58,11 @@ class GenerationJob(Base):
     def output_kind(self) -> str:
         output = self.output_format
         return output.kind if output else "video"
+
+    @property
+    def headline(self) -> str | None:
+        content = self.generated_content or {}
+        return (content.get("title") or content.get("hook") or None) if self.status == "completed" else None
 
     @property
     def post_text(self) -> str | None:

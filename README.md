@@ -146,6 +146,7 @@ All routes use `/api/v1`:
 | GET | `/ready` | Database migration, broker, model presence, and media tool checks |
 | GET | `/config/platforms` | Supported format, explicit inference mode, upload limit |
 | POST | `/generations` | Multipart `input_type` (`image`/`video`/`url`), `file` or `source_url`, `platform`, `format`, optional brand context, optional `music` (video formats only); 202 |
+| GET | `/generations?limit=20` | This browser's own jobs, newest first (owner cookie; empty without one); `limit` 1–50 |
 | GET | `/generations/{id}` | Persisted state, generated copy, safe errors |
 | POST | `/generations/{id}/retry` | Retry a failed job; 202 |
 | GET | `/generations/{id}/content` | Completed analysis, caption package, platform post text, scraped page metadata |

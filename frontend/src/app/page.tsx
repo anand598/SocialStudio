@@ -8,8 +8,9 @@ import {
   useRef,
   useState,
 } from "react";
+import { API, ApiError, request } from "../lib/api";
+import RecentJobs from "./RecentJobs";
 
-const API = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/$/, "");
 type InputType = "image" | "video" | "url";
 type Format = {
   platform: string;
@@ -113,50 +114,10 @@ function isValidURL(value: string) {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API}${path}`, {
-    ...init,
-    // The job-owner cookie must also reach a separately hosted API (NEXT_PUBLIC_API_URL).
-    credentials: "include",
-    signal: AbortSignal.timeout(30000),
-  });
-  const data = await response.json();
-  if (!response.ok)
-    throw new ApiError(errorMessage(data?.detail), response.status);
-  return data as T;
-}
-
-class ApiError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-  ) {
-    super(message);
-  }
-}
-
 // The API answers 404 for missing jobs and for jobs created in another browser alike.
 const UNAVAILABLE_JOB =
   "This result isn't available here. Results open only in the browser that created them — create a new one below.";
 
-type ValidationIssue = { loc?: (string | number)[]; msg?: string };
-
-// FastAPI returns a string for handled errors and a list for request validation errors.
-function errorMessage(detail: unknown): string {
-  if (typeof detail === "string") return detail;
-  if (Array.isArray(detail) && detail.length > 0) {
-    const issues = (detail as ValidationIssue[])
-      .slice(0, 3)
-      .map((issue) => {
-        const field = issue.loc?.filter((part) => part !== "body").join(".");
-        return field ? `${field} — ${issue.msg}` : issue.msg;
-      })
-      .filter(Boolean);
-    if (issues.length)
-      return `The server rejected the request: ${issues.join("; ")}.`;
-  }
-  return "The request could not be completed. Check the input and try again.";
-}
 
 export default function Home() {
   const [config, setConfig] = useState<Config | null>(null);
@@ -1034,6 +995,16 @@ export default function Home() {
             </div>
           </section>
         )}
+        <RecentJobs
+          activeId={jobID}
+          refreshKey={`${job?.id ?? ""}:${job?.status ?? ""}`}
+          labelFor={(platformKey, formatKey) =>
+            formats.find(
+              (item) =>
+                item.platform === platformKey && item.format === formatKey,
+            )?.label ?? `${platformKey} ${formatKey}`
+          }
+        />
         <footer>
           <span>Made for stories worth sharing.</span>
           <span>INSTAGRAM · TIKTOK · YOUTUBE · TEMPLATE-BASED RENDERING</span>
