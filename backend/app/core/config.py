@@ -1,7 +1,8 @@
+import ipaddress
 from functools import lru_cache
 from typing import Literal
 from pathlib import Path
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,6 +25,21 @@ class Settings(BaseSettings):
     celery_broker_url: str = "redis://localhost:6379/1"
     celery_result_backend: str = "redis://localhost:6379/2"
     requests_per_minute: int = Field(default=10, gt=0)
+    # Generation POSTs per client per UTC day; 0 disables the quota.
+    daily_generation_quota: int = Field(default=100, ge=0)
+    # memory counts per process (local development); redis shares counts between API processes.
+    rate_limit_backend: Literal["memory", "redis"] = "memory"
+    # Comma-separated proxy IPs/CIDRs whose X-Forwarded-For is believed; empty trusts no one.
+    trusted_proxies: str = ""
+
+    @field_validator("trusted_proxies")
+    @classmethod
+    def _valid_networks(cls, value: str) -> str:
+        for item in value.split(","):
+            if item.strip():
+                ipaddress.ip_network(item.strip(), strict=False)  # ValueError -> validation error
+        return value
+
     font_path: str = ""
     font_bold_path: str = ""
     ffmpeg_timeout_seconds: int = Field(default=180, gt=0)
