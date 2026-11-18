@@ -133,7 +133,10 @@ See [.env.example](.env.example). Defaults are development-only, including the P
 | `URL_FETCH_TIMEOUT_SECONDS`, `URL_MAX_REDIRECTS` | Product URL fetch bounds, default 10 s / 3 redirects |
 | `FFMPEG_TIMEOUT_SECONDS` | Per subprocess timeout, default 180 |
 | `STALE_JOB_SECONDS` | Abandoned job expiry, default 900 |
-| `REQUESTS_PER_MINUTE` | Per-process/client-IP generation request limit, default 10 |
+| `REQUESTS_PER_MINUTE` | Generation POSTs (create, retry, new version) per client per minute, default 10 |
+| `DAILY_GENERATION_QUOTA` | Generation POSTs per client per UTC day, default 100; `0` disables |
+| `RATE_LIMIT_BACKEND` | `memory` (default; counts per process) or `redis` (shared across API processes via `REDIS_URL`; Compose sets it). If Redis is unreachable requests are allowed and a warning is logged |
+| `TRUSTED_PROXIES` | Comma-separated IPs/CIDRs of proxies whose `X-Forwarded-For` identifies the client, default empty (socket address only). Compose trusts Docker's private ranges so the frontend proxy is trusted |
 | `FONT_PATH`, `FONT_BOLD_PATH` | Optional TrueType fonts (body, headlines) for other scripts or branding; Docker bundles DejaVu Sans and Sans Bold |
 | `COOKIE_SECURE` | Mark the job-owner cookie `Secure`; set `true` whenever served over HTTPS (the public Compose override does) |
 

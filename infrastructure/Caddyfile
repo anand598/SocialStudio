@@ -6,6 +6,8 @@
     basic_auth {
         {$REVIEW_USERNAME} {$REVIEW_PASSWORD_HASH}
     }
+    # Caddy replaces any client-sent X-Forwarded-For with the real client address (no trusted_proxies
+    # configured here); Next.js passes it through unchanged, and the API trusts it via TRUSTED_PROXIES.
     reverse_proxy frontend:3000
     header {
         X-Content-Type-Options nosniff

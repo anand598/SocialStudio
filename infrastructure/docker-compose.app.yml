@@ -13,6 +13,15 @@ services:
       LOCAL_STORAGE_PATH: /storage
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      # Count generation requests in Redis so every API process shares one limit.
+      RATE_LIMIT_BACKEND: redis
+      REQUESTS_PER_MINUTE: ${REQUESTS_PER_MINUTE:-10}
+      DAILY_GENERATION_QUOTA: ${DAILY_GENERATION_QUOTA:-100}
+      # The API sees requests from the frontend container (Next.js /api rewrite), whose address is
+      # assigned dynamically from the Compose network. Docker allocates those networks from private
+      # ranges and the API port is published on loopback only, so trusting the private ranges means
+      # trusting our own containers. Narrow to your network's subnet (docker network inspect) if you prefer.
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-172.16.0.0/12,192.168.0.0/16,10.0.0.0/8}
     command: ["alembic", "upgrade", "head"]
     depends_on:
       postgres:
