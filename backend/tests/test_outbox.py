@@ -354,3 +354,36 @@ def test_fast_path_tries_the_broker_again_after_the_pause(client, image_bytes, b
     broker.up = True
     later = submit(client, image_bytes).json()["id"]
     assert ("social.generate", later) in broker.sent
+
+
+def test_publishing_to_an_unreachable_broker_fails_fast():
+    # kombu's Redis transport ignores broker_connection_timeout; without socket timeouts in the
+    # transport options a publish to a blackholed broker blocks for 75-127 s (or forever if Redis
+    # hangs), tying up request threads and the relay.
+    from celery import Celery
+    from app.workers.celery_app import broker_transport_options
+    probe = Celery("probe", broker="redis://192.0.2.1:6379/1")  # TEST-NET-1: never routable
+    probe.conf.update(broker_connection_timeout=3, broker_transport_options=broker_transport_options(900))
+    started = time.monotonic()
+    with pytest.raises(Exception):
+        probe.send_task("social.generate", args=["x"], retry=False)
+    assert time.monotonic() - started < 8
+
+
+def test_a_failed_read_after_commit_keeps_the_committed_job_and_its_media(client, image_bytes, broker, monkeypatch):
+    # The job and its queue message are committed, so the job will run: its inputs must stay.
+    from sqlalchemy.exc import OperationalError
+    from sqlalchemy.orm import Session
+    from app.services.storage.local import job_directory
+    real_refresh = Session.refresh
+    def flaky(self, instance, *args, **kwargs):
+        if isinstance(instance, GenerationJob):
+            raise OperationalError("refresh", {}, Exception("connection lost"))
+        return real_refresh(self, instance, *args, **kwargs)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(Session, "refresh", flaky)
+        response = submit(client, image_bytes)
+    [stored] = list(job_directory(uuid4()).parent.iterdir())
+    assert response.status_code in (202, 503)
+    assert (stored / "input.jpg").is_file()
+    assert count(client, GenerationJob) == 1 and count(client, OutboxMessage) == 1

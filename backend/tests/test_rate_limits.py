@@ -316,3 +316,16 @@ def test_shared_counting_with_a_real_redis(limits):
                 await client.aclose()
 
     asyncio.run(scenario())
+
+
+def test_ipv6_clients_are_counted_per_64_block():
+    # One subscriber usually gets a whole /64; keying single IPv6 addresses would let it rotate
+    # addresses to escape both the per-minute limit and the daily quota.
+    from app.core.limits import client_address
+    def scope(peer):
+        return {"client": (peer, 1234), "headers": []}
+    a = client_address(scope("2001:db8:1:2::10"), "")
+    b = client_address(scope("2001:db8:1:2:ffff:ffff:ffff:1"), "")
+    other = client_address(scope("2001:db8:1:3::10"), "")
+    assert a == b != other
+    assert client_address(scope("::ffff:203.0.113.7"), "") == "203.0.113.7"   # IPv4 stays per address

@@ -132,12 +132,14 @@ async def create_generation(
         session.add(job)
         message = outbox.add(session, job_id)  # Same transaction: no job without its queue message.
         session.commit()
-        session.refresh(job)
     except SQLAlchemyError as exc:
         session.rollback()
         shutil.rmtree(job_directory(job_id), ignore_errors=True)
         logger.exception("Could not persist job %s", job_id)
         raise HTTPException(503, "Storage is unavailable. Please try again shortly.") from exc
+    # After the commit the job will run, so its media must stay even if this read fails (503 via the
+    # global handler; the job then appears in the browser's history).
+    session.refresh(job)
     set_owner_cookie(response, token)  # Refreshes the expiry on every new job.
     # Off the event loop: an unreachable broker blocks until its connect timeout.
     await run_in_threadpool(outbox.publish_now, session, message)
@@ -273,7 +275,6 @@ def create_variant(job_id: UUID, response: Response, body: VariantRequest | None
             session.add(job)
             message = outbox.add(session, new_id)  # Same transaction as the new job.
             session.commit()
-            session.refresh(job)
             break
         except IntegrityError:
             session.rollback()
@@ -286,6 +287,7 @@ def create_variant(job_id: UUID, response: Response, body: VariantRequest | None
             shutil.rmtree(directory, ignore_errors=True)
             logger.exception("Could not persist a version of job %s", job_id)
             raise HTTPException(503, "Storage is unavailable. Please try again shortly.") from exc
+    session.refresh(job)  # outside the cleanup above: once committed, the version will run
     set_owner_cookie(response, token)
     outbox.publish_now(session, message)
     return job

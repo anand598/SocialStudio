@@ -2,7 +2,7 @@
 
 The live instance is listed in the [submission summary](submission.md). This page covers what any deployment needs. The supplied Dockerfiles and Compose application override are the starting point for a container deployment.
 
-After each update, run `alembic upgrade head` before starting the new API and worker, and keep exactly one scheduler running: it expires stuck jobs every minute and purges expired media every hour. Containers do not read `.env`; settings must be passed through the Compose environment (as `infrastructure/docker-compose.app.yml` does for `MEDIA_RETENTION_DAYS` and the upload limits).
+After each update, run `alembic upgrade head` before starting the new API and worker, and keep exactly one scheduler running: it expires stuck jobs every minute and purges expired media every hour. Rate limits are shared through Redis and identify clients by `X-Forwarded-For` only from `TRUSTED_PROXIES` (Compose trusts the private ranges its own containers use). If the host serves IPv6 visitors, enable IPv6 on the Docker network or run Caddy with host networking: otherwise Docker's proxy presents every IPv6 visitor as the bridge gateway and they share one quota. Containers do not read `.env`; settings must be passed through the Compose environment (as `infrastructure/docker-compose.app.yml` does for `MEDIA_RETENTION_DAYS` and the upload limits).
 
 ## Assessment topology
 

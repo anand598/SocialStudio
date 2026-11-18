@@ -4,11 +4,20 @@ from celery.signals import worker_ready
 from app.core.config import get_settings
 
 settings = get_settings()
+
+
+def broker_transport_options(stale_job_seconds: int) -> dict:
+    """Redis transport options. kombu's Redis transport ignores broker_connection_timeout, and its
+    socket timeouts default to None: without these, publishing to an unreachable or hung broker blocks
+    for minutes (or forever), tying up API request threads and the outbox relay."""
+    return {"visibility_timeout": stale_job_seconds, "socket_connect_timeout": 3, "socket_timeout": 5}
+
+
 celery_app = Celery("social", broker=settings.celery_broker_url, include=["app.workers.tasks"])
 celery_app.conf.update(task_ignore_result=True, task_acks_late=True,
     task_reject_on_worker_lost=True, worker_prefetch_multiplier=1,
     broker_connection_retry_on_startup=True,
-    broker_connection_timeout=3, broker_transport_options={"visibility_timeout": settings.stale_job_seconds},
+    broker_connection_timeout=3, broker_transport_options=broker_transport_options(settings.stale_job_seconds),
     task_soft_time_limit=settings.stale_job_seconds - 30, task_time_limit=settings.stale_job_seconds,
     beat_schedule={"expire-abandoned-jobs": {"task": "social.recover_stale", "schedule": 60.0},
                    "purge-expired-media": {"task": "social.purge_expired", "schedule": 3600.0}})

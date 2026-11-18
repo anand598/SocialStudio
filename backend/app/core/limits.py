@@ -61,7 +61,10 @@ def client_address(scope, trusted_proxies: str) -> str:
 
     def normalised(value):
         address = _parse_ip(value)
-        return str(address) if address is not None else value.strip()[:100]
+        if address is None:
+            return value.strip()[:100]
+        # A subscriber usually holds a whole IPv6 /64; count the block so rotating addresses can't escape.
+        return str(ipaddress.ip_network(f"{address}/64", strict=False)) if address.version == 6 else str(address)
 
     if not networks or not trusted(peer):
         return normalised(peer)
