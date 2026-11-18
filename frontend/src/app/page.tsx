@@ -1,225 +1,26 @@
 "use client";
 
-import {
-  ChangeEvent,
-  FormEvent,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
-import { API, ApiError, request } from "../lib/api";
+import { useCallback, useEffect, useState } from "react";
+import { request } from "../lib/api";
+import type { Config, InputType, Job } from "../lib/types";
+import { useJobPolling } from "../lib/useJobPolling";
+import CopyPanel from "./CopyPanel";
+import CreateForm from "./CreateForm";
 import RecentJobs from "./RecentJobs";
-
-type InputType = "image" | "video" | "url";
-type Format = {
-  platform: string;
-  platform_label: string;
-  format: string;
-  label: string;
-  kind: "video" | "image";
-  width: number;
-  height: number;
-  aspect_ratio: string;
-  description: string;
-};
-type Config = {
-  formats: Format[];
-  input_types?: InputType[];
-  generation_mode: "demo" | "ollama";
-  max_upload_size_mb: number;
-  max_video_upload_size_mb?: number;
-  max_source_video_seconds?: number;
-  max_music_upload_size_mb?: number;
-  max_music_seconds?: number;
-  max_logo_upload_size_mb?: number;
-  // Days before stored media is deleted; 0 or absent means it is kept indefinitely.
-  media_retention_days?: number;
-};
-type Analysis = {
-  product_name: string | null;
-  product_category: string;
-  visible_attributes: string[];
-  confidence_or_limitations: string;
-  facts_needing_user_confirmation: string[];
-};
-type Content = {
-  title?: string;
-  hook: string;
-  short_description: string;
-  benefits: string[];
-  caption: string;
-  call_to_action: string;
-  hashtags: string[];
-  disclaimer_or_assumptions: string;
-};
-type Job = {
-  id: string;
-  status: "queued" | "processing" | "completed" | "failed";
-  stage: string;
-  input_type?: InputType;
-  platform?: string;
-  format?: string;
-  output_kind?: "video" | "image";
-  has_music?: boolean;
-  post_text?: string | null;
-  // Set on jobs made with "Make another version"; originals are null / 1.
-  parent_id?: string | null;
-  variant?: number;
-  // Its media was deleted after the retention period; the text is kept. Absent from older APIs.
-  expired?: boolean;
-  generation_mode: string;
-  error_message: string | null;
-  product_analysis: Analysis | null;
-  generated_content: Content | null;
-};
-const IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
-const AUDIO_TYPES = [
-  "audio/mpeg",
-  "audio/mp3",
-  "audio/mp4",
-  "audio/x-m4a",
-  "audio/m4a",
-  "audio/wav",
-  "audio/x-wav",
-  "audio/wave",
-  "audio/vnd.wave",
-];
-const VIDEO_TYPES = ["video/mp4", "video/quicktime", "video/webm"];
-const inputTabs: { key: InputType; label: string; icon: string }[] = [
-  { key: "image", label: "Image", icon: "▣" },
-  { key: "video", label: "Video", icon: "▶" },
-  { key: "url", label: "Product URL", icon: "↗" },
-];
-
-function stagesFor(input: InputType, kind: "video" | "image") {
-  return [
-    input === "url"
-      ? { key: "fetching", label: "Read the product page" }
-      : {
-          key: "validating",
-          label: input === "video" ? "Prepare video" : "Prepare image",
-        },
-    {
-      key: "analyzing",
-      label: input === "video" ? "Watch the video" : "Understand the product",
-    },
-    { key: "writing_copy", label: "Write the story" },
-    {
-      key: "rendering",
-      label: kind === "image" ? "Design your post" : "Render your video",
-    },
-    { key: "finalizing", label: "Check the result" },
-  ];
-}
-
-function isValidURL(value: string) {
-  try {
-    const url = new URL(value.trim());
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
+import ResultPanel from "./ResultPanel";
 
 // The API answers 404 for missing jobs and for jobs created in another browser alike.
 const UNAVAILABLE_JOB =
   "This result isn't available here. Results open only in the browser that created them — create a new one below.";
 
-function days(count: number) {
-  return `${count} ${count === 1 ? "day" : "days"}`;
-}
-
+/**
+ * The studio page. It loads the config and wires the pieces together: the form's
+ * input type and format (which the result panel previews before a job exists), the open
+ * job (useJobPolling), and the submitting / error / copied state that several pieces share.
+ */
 export default function Home() {
   const [config, setConfig] = useState<Config | null>(null);
   const [configError, setConfigError] = useState("");
-  const [inputType, setInputType] = useState<InputType>("image");
-  const [file, setFile] = useState<File | null>(null);
-  const [mediaURL, setMediaURL] = useState("");
-  const [productURL, setProductURL] = useState("");
-  const [platform, setPlatform] = useState("instagram");
-  const [formatKey, setFormatKey] = useState("reel");
-  const [brand, setBrand] = useState("");
-  const [description, setDescription] = useState("");
-  const [cta, setCta] = useState("Explore the collection");
-  const [music, setMusic] = useState<File | null>(null);
-  const musicInput = useRef<HTMLInputElement>(null);
-  // "" means no brand colour: the palette then comes from the product photo.
-  const [brandColor, setBrandColor] = useState("");
-  const [logo, setLogo] = useState<File | null>(null);
-  const logoInput = useRef<HTMLInputElement>(null);
-  const [job, setJob] = useState<Job | null>(null);
-  const [jobID, setJobID] = useState("");
-  const [error, setError] = useState("");
-  const [pollError, setPollError] = useState("");
-  const [unavailable, setUnavailable] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [dragging, setDragging] = useState(false);
-  const [copied, setCopied] = useState(false);
-  // The "another version" choice, remembered per job; otherwise it follows the open job.
-  const [variantChoice, setVariantChoice] = useState<{
-    jobId: string;
-    platform: string;
-    format: string;
-  } | null>(null);
-  // A version request and its error belong to the job they were made from, so they never
-  // follow the user to another job.
-  const [variantSendingFrom, setVariantSendingFrom] = useState("");
-  const [variantErrorFor, setVariantErrorFor] = useState<{
-    jobId: string;
-    message: string;
-  } | null>(null);
-  const openJobID = useRef("");
-  const input = useRef<HTMLInputElement>(null);
-  const busy =
-    submitting || job?.status === "queued" || job?.status === "processing";
-  const formats = config?.formats ?? [];
-  const platforms = formats.filter(
-    (item, index) =>
-      formats.findIndex((other) => other.platform === item.platform) === index,
-  );
-  const platformFormats = formats.filter((item) => item.platform === platform);
-  const selectedFormat =
-    platformFormats.find((item) => item.format === formatKey) ??
-    platformFormats[0];
-  const jobFormat = formats.find(
-    (item) => item.platform === job?.platform && item.format === job?.format,
-  );
-  const resultFormat = jobFormat ?? selectedFormat;
-  const resultKind = job?.output_kind ?? resultFormat?.kind ?? "video";
-  const variantSending = !!job && variantSendingFrom === job.id;
-  const variantError =
-    variantErrorFor && variantErrorFor.jobId === job?.id
-      ? variantErrorFor.message
-      : "";
-  const variantPlatform =
-    variantChoice && variantChoice.jobId === job?.id
-      ? variantChoice.platform
-      : (job?.platform ?? "");
-  const variantFormats = formats.filter(
-    (item) => item.platform === variantPlatform,
-  );
-  const variantTarget =
-    variantFormats.find(
-      (item) =>
-        item.format ===
-        (variantChoice && variantChoice.jobId === job?.id
-          ? variantChoice.format
-          : job?.format),
-    ) ?? variantFormats[0];
-  const stages = stagesFor(job?.input_type ?? inputType, resultKind);
-  const imageLimit = config?.max_upload_size_mb ?? 15;
-  const videoLimit = config?.max_video_upload_size_mb ?? 100;
-  const musicLimit = config?.max_music_upload_size_mb ?? 20;
-  const logoLimit = config?.max_logo_upload_size_mb ?? 2;
-  // Music only applies to video outputs; it is kept if the user switches back to a video format.
-  const musicApplies = selectedFormat?.kind === "video";
-  const withMusic = musicApplies && music !== null;
-  const hasInput = inputType === "url" ? isValidURL(productURL) : file !== null;
-  // Expired jobs keep their text, but their preview, download, retry and new versions are gone.
-  const expired = job?.expired === true;
-  const retentionDays = Math.max(0, config?.media_retention_days ?? 0);
-
   const loadConfig = useCallback(() => {
     setConfigError("");
     request<Config>("/api/v1/config/platforms")
@@ -231,164 +32,44 @@ export default function Home() {
       );
   }, []);
   useEffect(loadConfig, [loadConfig]);
-  useEffect(() => {
-    openJobID.current = jobID;
-  }, [jobID]);
-  useEffect(() => {
-    // The #job= fragment is the shareable result link; follow it on load and on
-    // back/forward or pasted-link navigation, which change the hash without a reload.
-    const restore = () => {
-      const id = new URLSearchParams(window.location.hash.slice(1)).get("job");
-      if (id && /^[0-9a-f-]{36}$/i.test(id)) {
-        setJobID(id);
-      } else {
-        // No job in the URL (e.g. Back to the start page): show the empty studio.
-        setJobID("");
-        setJob(null);
-      }
-    };
-    restore();
-    window.addEventListener("hashchange", restore);
-    return () => window.removeEventListener("hashchange", restore);
-  }, []);
-  useEffect(() => {
-    if (!file) {
-      setMediaURL("");
-      return;
-    }
-    const url = URL.createObjectURL(file);
-    setMediaURL(url);
-    return () => URL.revokeObjectURL(url);
-  }, [file]);
-  useEffect(() => {
-    setUnavailable(false);
-    if (!jobID) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => {
-      try {
-        const next = await request<Job>(`/api/v1/generations/${jobID}`);
-        if (cancelled) return;
-        setJob(next);
-        setPollError("");
-        if (next.status === "completed" || next.status === "failed") return;
-      } catch (err) {
-        if (cancelled) return;
-        if (err instanceof ApiError && err.status === 404) {
-          setJob(null);
-          setPollError("");
-          setUnavailable(true);
-          return;
-        }
-        setPollError(
-          err instanceof Error
-            ? err.message
-            : "Connection interrupted. Reconnecting…",
-        );
-      }
-      timer = setTimeout(poll, 2500);
-    };
-    void poll();
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [jobID]);
 
-  function chooseInput(next: InputType) {
-    if (busy || next === inputType) return;
-    setInputType(next);
-    setFile(null);
-    setError("");
-  }
+  const [inputType, setInputType] = useState<InputType>("image");
+  const [target, setTarget] = useState({
+    platform: "instagram",
+    format: "reel",
+  });
+  // Shown under the form: upload validation, create and retry failures, clipboard errors.
+  const [error, setError] = useState("");
+  // A create or retry request is in flight.
+  const [submitting, setSubmitting] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const { job, jobID, pollError, unavailable, open, reopen, isOpen } =
+    useJobPolling();
+  const busy =
+    submitting || job?.status === "queued" || job?.status === "processing";
+  const formats = config?.formats ?? [];
+  const platformFormats = formats.filter(
+    (item) => item.platform === target.platform,
+  );
+  const selectedFormat =
+    platformFormats.find((item) => item.format === target.format) ??
+    platformFormats[0];
+  const jobFormat = formats.find(
+    (item) => item.platform === job?.platform && item.format === job?.format,
+  );
+  const resultFormat = jobFormat ?? selectedFormat;
+  const retentionDays = Math.max(0, config?.media_retention_days ?? 0);
+  const content = job?.generated_content;
 
-  function choosePlatform(next: string) {
-    setPlatform(next);
-    setFormatKey(formats.find((item) => item.platform === next)?.format ?? "");
-  }
-
-  function selectFile(candidate?: File) {
-    setError("");
-    if (!candidate) return;
-    const video = inputType === "video";
-    if (!(video ? VIDEO_TYPES : IMAGE_TYPES).includes(candidate.type)) {
-      setError(
-        video
-          ? "Choose an MP4, MOV, or WebM video."
-          : "Choose a JPEG, PNG, or WebP image.",
-      );
-      return;
-    }
-    const limit = video ? videoLimit : imageLimit;
-    if (candidate.size > limit * 1024 * 1024) {
-      setError(`Choose a ${inputType} smaller than ${limit} MB.`);
-      return;
-    }
-    setFile(candidate);
-  }
-
-  function selectMusic(candidate?: File) {
-    setError("");
-    if (!candidate) return;
-    if (!AUDIO_TYPES.includes(candidate.type)) {
-      setError("Choose an MP3, M4A, or WAV track.");
-      return;
-    }
-    if (candidate.size > musicLimit * 1024 * 1024) {
-      setError(`Choose a music track smaller than ${musicLimit} MB.`);
-      return;
-    }
-    setMusic(candidate);
-  }
-
-  function selectLogo(candidate?: File) {
-    setError("");
-    if (!candidate) return;
-    if (!IMAGE_TYPES.includes(candidate.type)) {
-      setError("Choose a PNG, JPEG, or WebP logo.");
-      return;
-    }
-    if (candidate.size > logoLimit * 1024 * 1024) {
-      setError(`Choose a logo smaller than ${logoLimit} MB.`);
-      return;
-    }
-    setLogo(candidate);
-  }
-
-  function removeLogo() {
-    setLogo(null);
-    if (logoInput.current) logoInput.current.value = "";
-  }
-
-  function removeMusic() {
-    setMusic(null);
-    if (musicInput.current) musicInput.current.value = "";
-  }
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    if (!hasInput || !selectedFormat || busy) return;
+  async function create(body: FormData) {
     setSubmitting(true);
     setError("");
-    const body = new FormData();
-    body.set("input_type", inputType);
-    if (inputType === "url") body.set("source_url", productURL.trim());
-    else if (file) body.set("file", file);
-    body.set("platform", selectedFormat.platform);
-    body.set("format", selectedFormat.format);
-    body.set("brand_name", brand);
-    body.set("brand_description", description);
-    body.set("call_to_action", cta);
-    if (withMusic && music) body.set("music", music);
-    if (brandColor) body.set("brand_color", brandColor.toUpperCase());
-    if (logo) body.set("logo", logo);
     try {
       const next = await request<Job>("/api/v1/generations", {
         method: "POST",
         body,
       });
-      setJob(next);
-      setJobID(next.id);
+      open(next);
       window.history.replaceState(null, "", `#job=${next.id}`);
     } catch (err) {
       setError(
@@ -407,10 +88,8 @@ export default function Home() {
       const next = await request<Job>(`/api/v1/generations/${job.id}/retry`, {
         method: "POST",
       });
-      setJob(next);
-      // Restart the polling effect for this same persisted job.
-      setJobID("");
-      setTimeout(() => setJobID(next.id), 0);
+      // Restart polling for this same persisted job.
+      reopen(next);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Retry failed.");
     } finally {
@@ -418,96 +97,15 @@ export default function Home() {
     }
   }
 
-  const content = job?.generated_content;
-  const caption = content
-    ? (job?.post_text ??
-      `${content.caption}\n\n${content.call_to_action}\n\n${content.hashtags.join(" ")}`)
-    : "";
-  const resultLabel = resultFormat?.label ?? "creative";
-  const expiredNote = [
-    `Files are deleted${retentionDays ? ` after ${days(retentionDays)}` : ""} to protect your media.`,
-    // Only finished jobs show the caption panel.
-    job?.status === "completed" && content
-      ? "The caption is still below — create a new one any time."
-      : "Create a new one any time.",
-  ].join(" ");
-  async function copyCaption() {
-    try {
-      await navigator.clipboard.writeText(caption);
-      setCopied(true);
-    } catch {
-      setError(
-        "Clipboard is unavailable. Select the caption text or download it instead.",
-      );
-    }
+  function openVariant(from: string, next: Job) {
+    // The user opened another job meanwhile: the version is still made (it shows in
+    // Recent creatives), but don't pull them away from what they chose.
+    if (!isOpen(from)) return;
+    open(next);
+    setCopied(false);
+    // A real history entry, so Back returns to the original.
+    window.location.hash = `job=${next.id}`;
   }
-  function downloadCaption() {
-    const blob = new Blob(
-      [caption + "\n\n" + content?.disclaimer_or_assumptions],
-      { type: "text/plain;charset=utf-8" },
-    );
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `caption-${job?.id}.txt`;
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }
-  function chooseVariant(platformKey: string, formatKey?: string) {
-    if (!job) return;
-    setVariantErrorFor(null);
-    setVariantChoice({
-      jobId: job.id,
-      platform: platformKey,
-      format:
-        formatKey ??
-        formats.find((item) => item.platform === platformKey)?.format ??
-        "",
-    });
-  }
-  async function createVariant(event: FormEvent) {
-    event.preventDefault();
-    if (!job || !variantTarget || variantSending) return;
-    const from = job.id;
-    setVariantSendingFrom(from);
-    setVariantErrorFor(null);
-    try {
-      const next = await request<Job>(
-        `/api/v1/generations/${job.id}/variants`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            platform: variantTarget.platform,
-            format: variantTarget.format,
-          }),
-        },
-      );
-      // The user opened another job meanwhile: the version is still made (it shows in
-      // Recent creatives), but don't pull them away from what they chose.
-      if (openJobID.current !== from) return;
-      setJob(next);
-      setJobID(next.id);
-      setCopied(false);
-      // A real history entry, so Back returns to the original.
-      window.location.hash = `job=${next.id}`;
-    } catch (err) {
-      setVariantErrorFor({
-        jobId: from,
-        message:
-          err instanceof Error
-            ? err.message
-            : "We couldn’t start a new version. Try again.",
-      });
-    } finally {
-      setVariantSendingFrom((current) => (current === from ? "" : current));
-    }
-  }
-  const activeStage = Math.max(
-    stages.findIndex((stage) => stage.key === job?.stage),
-    job?.stage === "validating" ? 0 : -1,
-  );
-  const assetURL = job ? `${API}/api/v1/generations/${job.id}` : "";
 
   return (
     <div className="studio-shell">
@@ -569,717 +167,42 @@ export default function Home() {
           </div>
         )}
         <div className="workspace">
-          <form className="editor panel" onSubmit={submit}>
-            <div className="panel-heading">
-              <div>
-                <span className="step-number">01</span>
-                <h2>Set the scene</h2>
-              </div>
-              <span className="small-label">YOUR INPUT</span>
-            </div>
-            <div className="input-tabs" role="tablist" aria-label="Input type">
-              {inputTabs.map((tab) => (
-                <button
-                  key={tab.key}
-                  type="button"
-                  role="tab"
-                  aria-selected={inputType === tab.key}
-                  className={inputType === tab.key ? "active" : ""}
-                  onClick={() => chooseInput(tab.key)}
-                  disabled={busy}
-                >
-                  <span aria-hidden="true">{tab.icon}</span> {tab.label}
-                </button>
-              ))}
-            </div>
-            {inputType === "url" ? (
-              <>
-                <label className="field-label" htmlFor="product-url">
-                  Product page URL{" "}
-                  <span>Public product page or image link</span>
-                </label>
-                <input
-                  id="product-url"
-                  type="url"
-                  inputMode="url"
-                  value={productURL}
-                  onChange={(e) => setProductURL(e.target.value)}
-                  maxLength={2048}
-                  placeholder="https://shop.example.com/products/desk-lamp"
-                  disabled={busy}
-                  aria-invalid={productURL !== "" && !isValidURL(productURL)}
-                />
-                <p className="field-hint">
-                  {productURL !== "" && !isValidURL(productURL)
-                    ? "Enter a full http:// or https:// address."
-                    : "We read the page’s product image, title and description. Some stores block automated access — upload the image instead if so."}
-                </p>
-              </>
-            ) : (
-              <>
-                <label className="field-label" htmlFor="product-file">
-                  {inputType === "video" ? "Product video" : "Product image"}
-                </label>
-                <div
-                  className={`upload-zone ${dragging ? "dragging" : ""} ${mediaURL ? "has-image" : ""}`}
-                  onDragOver={(event) => {
-                    event.preventDefault();
-                    if (!busy) setDragging(true);
-                  }}
-                  onDragLeave={() => setDragging(false)}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    setDragging(false);
-                    if (!busy) selectFile(event.dataTransfer.files[0]);
-                  }}
-                >
-                  {mediaURL ? (
-                    <>
-                      {inputType === "video" ? (
-                        <video
-                          src={mediaURL}
-                          className="uploaded-image"
-                          muted
-                          playsInline
-                          controls
-                          aria-label="Selected product video"
-                        />
-                      ) : (
-                        <img
-                          src={mediaURL}
-                          alt="Selected product"
-                          className="uploaded-image"
-                        />
-                      )}
-                      <button
-                        type="button"
-                        className="change-image"
-                        onClick={() => input.current?.click()}
-                        disabled={busy}
-                      >
-                        Change {inputType}
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <span className="upload-icon" aria-hidden="true">
-                        ↥
-                      </span>
-                      <p>Drop something worth sharing.</p>
-                      <span>
-                        Drag {inputType === "video" ? "a video" : "an image"}{" "}
-                        here, or{" "}
-                        <button
-                          type="button"
-                          onClick={() => input.current?.click()}
-                          disabled={busy}
-                        >
-                          browse files
-                        </button>
-                      </span>
-                      <small>
-                        {inputType === "video"
-                          ? `MP4, MOV or WebM · Up to ${videoLimit} MB · ${config?.max_source_video_seconds ?? 180} s max`
-                          : `JPEG, PNG or WebP · Up to ${imageLimit} MB`}
-                      </small>
-                    </>
-                  )}
-                  <input
-                    id="product-file"
-                    ref={input}
-                    type="file"
-                    className="sr-only"
-                    accept={(inputType === "video"
-                      ? VIDEO_TYPES
-                      : IMAGE_TYPES
-                    ).join(",")}
-                    disabled={busy}
-                    onChange={(event: ChangeEvent<HTMLInputElement>) => {
-                      selectFile(event.target.files?.[0]);
-                      event.target.value = "";
-                    }}
-                  />
-                </div>
-                {file && (
-                  <p className="filename">
-                    {file.name}{" "}
-                    <span>{(file.size / 1024 / 1024).toFixed(2)} MB</span>
-                  </p>
-                )}
-              </>
-            )}
-            <div className="field-row">
-              <div>
-                <label className="field-label" htmlFor="platform">
-                  Platform
-                </label>
-                <select
-                  id="platform"
-                  value={selectedFormat?.platform ?? ""}
-                  disabled={!selectedFormat || busy}
-                  onChange={(e) => choosePlatform(e.target.value)}
-                >
-                  {platforms.length === 0 && <option value="">Loading…</option>}
-                  {platforms.map((item) => (
-                    <option key={item.platform} value={item.platform}>
-                      {item.platform_label ?? item.platform}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="field-label" htmlFor="format">
-                  Format
-                </label>
-                <select
-                  id="format"
-                  value={selectedFormat?.format ?? ""}
-                  disabled={!selectedFormat || busy}
-                  onChange={(e) => setFormatKey(e.target.value)}
-                >
-                  {platformFormats.length === 0 && (
-                    <option value="">Loading…</option>
-                  )}
-                  {platformFormats.map((item) => (
-                    <option key={item.format} value={item.format}>
-                      {item.label.replace(`${item.platform_label} `, "")} ·{" "}
-                      {item.aspect_ratio}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-            {selectedFormat && (
-              <div className="format-card" aria-live="polite">
-                <span
-                  className="format-shape"
-                  style={{
-                    aspectRatio: `${selectedFormat.width} / ${selectedFormat.height}`,
-                  }}
-                  aria-hidden="true"
-                />
-                <div>
-                  <strong>
-                    {selectedFormat.width} × {selectedFormat.height} ·{" "}
-                    {selectedFormat.kind === "video"
-                      ? "MP4 video"
-                      : "JPEG image"}
-                  </strong>
-                  <span>{selectedFormat.description}</span>
-                </div>
-              </div>
-            )}
-            <div className="form-divider" />
-            <div className="section-caption">
-              MAKE IT YOURS <span>Optional</span>
-            </div>
-            <label className="field-label" htmlFor="brand">
-              Brand name
-            </label>
-            <input
-              id="brand"
-              value={brand}
-              onChange={(e) => setBrand(e.target.value)}
-              maxLength={80}
-              placeholder="e.g. Sunday Supply"
-              disabled={busy}
-            />
-            <label className="field-label" htmlFor="description">
-              Product context <span>Facts you can confirm</span>
-            </label>
-            <textarea
-              id="description"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              maxLength={500}
-              placeholder="Help the AI understand your product. Avoid unverified claims."
-              rows={2}
-              disabled={busy}
-            />
-            <label className="field-label" htmlFor="cta">
-              Call to action
-            </label>
-            <input
-              id="cta"
-              value={cta}
-              onChange={(e) => setCta(e.target.value)}
-              maxLength={100}
-              placeholder="Explore the collection"
-              disabled={busy}
-            />
-            <label className="field-label" htmlFor="brand-color">
-              Brand colour <span>Optional · button and backdrop tint</span>
-            </label>
-            <div className="music-field">
-              <input
-                id="brand-color"
-                type="color"
-                className="color-input"
-                aria-label="Brand colour"
-                value={brandColor || "#183d36"}
-                onChange={(e) => setBrandColor(e.target.value)}
-                disabled={busy}
-              />
-              <span className="color-value">
-                {brandColor ? brandColor.toUpperCase() : "From your product photo"}
-              </span>
-              {brandColor && (
-                <span className="music-chosen">
-                  <button
-                    type="button"
-                    onClick={() => setBrandColor("")}
-                    disabled={busy}
-                    aria-label="Remove brand colour"
-                  >
-                    Remove
-                  </button>
-                </span>
-              )}
-            </div>
-            <label className="field-label" htmlFor="logo">
-              Logo <span>Optional · PNG, JPEG, WebP up to {logoLimit} MB</span>
-            </label>
-            <div className="music-field">
-              <input
-                id="logo"
-                ref={logoInput}
-                type="file"
-                accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
-                onChange={(e) => selectLogo(e.target.files?.[0])}
-                disabled={busy}
-                className="music-input"
-              />
-              <label htmlFor="logo" className="music-button" aria-hidden="true">
-                {logo ? "Change logo" : "＋ Add a logo"}
-              </label>
-              {logo && (
-                <span className="music-chosen">
-                  <span>{logo.name}</span>
-                  <button
-                    type="button"
-                    onClick={removeLogo}
-                    disabled={busy}
-                    aria-label="Remove logo"
-                  >
-                    Remove
-                  </button>
-                </span>
-              )}
-            </div>
-            <p className="field-hint">
-              A transparent PNG works best. It replaces the brand name on the
-              creative.
-            </p>
-            {musicApplies && (
-              <>
-                <label className="field-label" htmlFor="music">
-                  Background music <span>Optional · MP3, M4A, WAV</span>
-                </label>
-                <div className="music-field">
-                  <input
-                    id="music"
-                    ref={musicInput}
-                    type="file"
-                    accept=".mp3,.m4a,.wav,audio/mpeg,audio/mp4,audio/x-m4a,audio/wav"
-                    onChange={(e) => selectMusic(e.target.files?.[0])}
-                    disabled={busy}
-                    className="music-input"
-                  />
-                  {/* The native input stays focusable for keyboards and screen readers; this pill is its visible face. */}
-                  <label
-                    htmlFor="music"
-                    className="music-button"
-                    aria-hidden="true"
-                  >
-                    {music ? "Change track" : "♪ Add a track"}
-                  </label>
-                  {music && (
-                    <span className="music-chosen">
-                      <span>{music.name}</span>
-                      <button
-                        type="button"
-                        onClick={removeMusic}
-                        disabled={busy}
-                        aria-label="Remove music"
-                      >
-                        Remove
-                      </button>
-                    </span>
-                  )}
-                </div>
-                <p className="field-hint">
-                  Use a track you have the rights to.{" "}
-                  {inputType === "video"
-                    ? "It plays quietly under your clip's own sound."
-                    : "It is trimmed to the video and faded in and out."}
-                </p>
-              </>
-            )}
-            {error && (
-              <p className="notice error" role="alert">
-                {error}
-              </p>
-            )}
-            <button
-              type="submit"
-              className="primary-button"
-              disabled={!hasInput || !selectedFormat || busy}
-            >
-              {submitting ? (
-                inputType === "url" ? (
-                  "Checking the link…"
-                ) : (
-                  `Uploading your ${inputType}…`
-                )
-              ) : busy ? (
-                "Your creative is in the making…"
-              ) : (
-                <>
-                  Create my {selectedFormat?.label ?? "creative"}{" "}
-                  <span aria-hidden="true">↗</span>
-                </>
-              )}
-            </button>
-            <p className="form-footnote">
-              {inputType === "video" && selectedFormat?.kind === "video"
-                ? `Your clip, reframed · Original audio kept${withMusic ? " · With your music" : ""}`
-                : selectedFormat?.kind === "image"
-                  ? "Designed still"
-                  : `Animated promo · ${withMusic ? "With your music" : "Silent video"}`}{" "}
-              · Review before publishing
-            </p>
-          </form>
-          <section
-            className="preview-panel panel"
-            aria-labelledby="preview-heading"
-          >
-            <div className="panel-heading">
-              <div>
-                <span className="step-number">02</span>
-                <h2 id="preview-heading">The spotlight</h2>
-              </div>
-              <span className="small-label">YOUR CREATIVE</span>
-            </div>
-            <div className="preview-body">
-              {job?.status === "completed" ? (
-                <div
-                  className="finished-preview"
-                  style={{
-                    ["--preview-ratio" as string]: resultFormat
-                      ? `${resultFormat.width} / ${resultFormat.height}`
-                      : "9 / 16",
-                    ["--preview-width" as string]:
-                      resultFormat && resultFormat.width > resultFormat.height
-                        ? "100%"
-                        : resultFormat?.width === resultFormat?.height
-                          ? "360px"
-                          : "290px",
-                  }}
-                >
-                  {expired ? (
-                    <div className="expired-frame" aria-hidden="true">
-                      <span>✳</span>
-                      MEDIA DELETED
-                    </div>
-                  ) : resultKind === "image" ? (
-                    <img
-                      key={job.id}
-                      src={`${assetURL}/preview`}
-                      alt={`Generated ${resultLabel}`}
-                    />
-                  ) : (
-                    <video
-                      key={job.id}
-                      controls
-                      playsInline
-                      preload="metadata"
-                      poster={`${assetURL}/thumbnail`}
-                      src={`${assetURL}/preview`}
-                      aria-label={`Generated ${resultLabel}`}
-                    />
-                  )}
-                  <span className="result-label">
-                    {resultFormat
-                      ? `${resultFormat.label.toUpperCase()} · ${resultFormat.width} × ${resultFormat.height}`
-                      : "READY FOR YOUR CLOSE-UP"}
-                  </span>
-                  {(job.variant ?? 1) > 1 && (
-                    <span className="version-tag">Version {job.variant}</span>
-                  )}
-                </div>
-              ) : (
-                <div className="mockup-stage">
-                  <div className="phone-frame">
-                    <div className="phone-top">
-                      social studio <span>•••</span>
-                    </div>
-                    <div className="phone-art">
-                      <div className="orbit orbit-one" />
-                      <div className="orbit orbit-two" />
-                      <span className="asterisk">✳</span>
-                      <div className="phone-copy">
-                        Small image.
-                        <br />
-                        <em>Big energy.</em>
-                      </div>
-                      <span className="phone-pill">
-                        YOUR NEXT{" "}
-                        {(
-                          selectedFormat?.platform_label ?? "post"
-                        ).toUpperCase()}{" "}
-                        {selectedFormat?.kind === "image" ? "POST" : "VIDEO"}
-                      </span>
-                    </div>
-                    <div className="phone-bottom">
-                      <span>♡ &nbsp; ◇ &nbsp; ↗</span>
-                      <span>▱</span>
-                    </div>
-                  </div>
-                  <div className="floating-note">
-                    A fresh angle
-                    <br />
-                    <span>on your product.</span>
-                    <b aria-hidden="true">↖</b>
-                  </div>
-                </div>
-              )}
-              <div
-                className="generation-status"
-                role="status"
-                aria-live="polite"
-              >
-                {!job && (
-                  <>
-                    <h3>A blank canvas. A world of possibility.</h3>
-                    <p>
-                      Add a product image, video or link to get started.
-                      <br />
-                      Your finished creative will appear right here.
-                    </p>
-                  </>
-                )}
-                {job?.status === "queued" && (
-                  <>
-                    <h3>
-                      {job.stage === "retry_wait"
-                        ? "Waiting to retry the AI service…"
-                        : "Your request is in the queue."}
-                    </h3>
-                    <p>
-                      The worker will pick it up shortly. You can refresh this
-                      page safely.
-                    </p>
-                  </>
-                )}
-                {job?.status === "processing" && (
-                  <>
-                    <h3>
-                      {stages[activeStage]?.label ?? "Making your creative…"}
-                    </h3>
-                    <p>Good stories take a moment. We’ll keep you posted.</p>
-                  </>
-                )}
-                {expired && (
-                  <>
-                    <h3>This result has expired</h3>
-                    <p>{expiredNote}</p>
-                  </>
-                )}
-                {job?.status === "failed" && !expired && (
-                  <>
-                    <h3>Let’s give that another take.</h3>
-                    <p>{job.error_message}</p>
-                    <button
-                      className="secondary-button"
-                      type="button"
-                      onClick={retry}
-                      disabled={submitting}
-                    >
-                      Retry generation ↻
-                    </button>
-                  </>
-                )}
-                {job?.status === "completed" && !expired && (
-                  <>
-                    <h3>
-                      {resultKind === "image"
-                        ? "Your product, ready to post."
-                        : "Your product, ready to play."}
-                    </h3>
-                    <p>
-                      {job.generation_mode === "demo"
-                        ? "Demo copy"
-                        : "AI-assisted copy"}{" "}
-                      · Real{" "}
-                      {resultKind === "image"
-                        ? "rendered image"
-                        : job.input_type === "video"
-                          ? "edit of your video"
-                          : "promo video"}
-                      {job.has_music ? " · with your music" : ""}
-                    </p>
-                    <a
-                      className="primary-button download"
-                      href={`${assetURL}/download`}
-                    >
-                      Download {resultLabel} <span>↓</span>
-                    </a>
-                    {retentionDays > 0 && (
-                      <p className="retention-note">
-                        Kept for {days(retentionDays)}
-                      </p>
-                    )}
-                  </>
-                )}
-                {pollError && (
-                  <p className="error" role="alert">
-                    {pollError} Reconnecting automatically…
-                  </p>
-                )}
-              </div>
-              {job?.status === "completed" && !expired && variantTarget && (
-                <form
-                  className="variant-form"
-                  onSubmit={createVariant}
-                  aria-labelledby="variant-heading"
-                >
-                  <h3 id="variant-heading">Make another version</h3>
-                  <div className="field-row">
-                    <div>
-                      <label className="field-label" htmlFor="variant-platform">
-                        Platform{" "}
-                        <span className="sr-only">for the new version</span>
-                      </label>
-                      <select
-                        id="variant-platform"
-                        value={variantTarget.platform}
-                        disabled={variantSending}
-                        onChange={(e) => chooseVariant(e.target.value)}
-                      >
-                        {platforms.map((item) => (
-                          <option key={item.platform} value={item.platform}>
-                            {item.platform_label ?? item.platform}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="field-label" htmlFor="variant-format">
-                        Format{" "}
-                        <span className="sr-only">for the new version</span>
-                      </label>
-                      <select
-                        id="variant-format"
-                        value={variantTarget.format}
-                        disabled={variantSending}
-                        onChange={(e) =>
-                          chooseVariant(variantTarget.platform, e.target.value)
-                        }
-                      >
-                        {variantFormats.map((item) => (
-                          <option key={item.format} value={item.format}>
-                            {item.label.replace(`${item.platform_label} `, "")} ·{" "}
-                            {item.aspect_ratio}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-                  <p className="field-hint">
-                    Reuses the same upload with fresh copy.
-                    {job.has_music && variantTarget.kind === "image"
-                      ? " Your music is left out — images have no sound."
-                      : ""}
-                  </p>
-                  {variantError && (
-                    <p className="notice error" role="alert">
-                      {variantError}
-                    </p>
-                  )}
-                  <button
-                    type="submit"
-                    className="secondary-button"
-                    disabled={variantSending}
-                  >
-                    {variantSending
-                      ? "Creating your new version…"
-                      : `Create a new ${variantTarget.label} version`}
-                  </button>
-                </form>
-              )}
-              {(job?.status === "processing" || job?.status === "queued") && (
-                <ol className="stage-list">
-                  {stages.map((stage, index) => (
-                    <li
-                      key={stage.key}
-                      className={
-                        index === activeStage
-                          ? "active"
-                          : index < activeStage
-                            ? "done"
-                            : ""
-                      }
-                    >
-                      <span>{index < activeStage ? "✓" : index + 1}</span>
-                      {stage.label}
-                    </li>
-                  ))}
-                </ol>
-              )}
-            </div>
-          </section>
+          <CreateForm
+            config={config}
+            inputType={inputType}
+            onInputTypeChange={setInputType}
+            selectedFormat={selectedFormat}
+            onFormatChange={(platform, format) =>
+              setTarget({ platform, format })
+            }
+            busy={busy}
+            submitting={submitting}
+            error={error}
+            onError={setError}
+            onSubmit={create}
+          />
+          <ResultPanel
+            job={job}
+            formats={formats}
+            resultFormat={resultFormat}
+            selectedFormat={selectedFormat}
+            inputType={inputType}
+            retentionDays={retentionDays}
+            pollError={pollError}
+            retrying={submitting}
+            onRetry={retry}
+            onVariantCreated={openVariant}
+          />
         </div>
         {job?.status === "completed" && content && (
-          <section className="copy-panel panel" aria-labelledby="copy-heading">
-            <div className="panel-heading">
-              <div>
-                <span className="step-number">03</span>
-                <h2 id="copy-heading">Words to go with it</h2>
-              </div>
-              <span className="small-label">YOUR CAPTION</span>
-            </div>
-            <div className="copy-grid">
-              <div>
-                <label className="field-label" htmlFor="caption">
-                  {resultFormat?.platform === "youtube"
-                    ? "Title, description & hashtags"
-                    : "Caption & hashtags"}
-                </label>
-                <textarea id="caption" readOnly value={caption} rows={8} />
-                <div className="copy-actions">
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    onClick={copyCaption}
-                  >
-                    {copied ? "Copied ✓" : "Copy caption"}
-                  </button>
-                  <button
-                    type="button"
-                    className="text-button"
-                    onClick={downloadCaption}
-                  >
-                    Download text ↓
-                  </button>
-                </div>
-              </div>
-              <div className="review-note">
-                <h3>A quick check before you share.</h3>
-                <p>{content.disclaimer_or_assumptions}</p>
-                {job.product_analysis && (
-                  <>
-                    <p>{job.product_analysis.confidence_or_limitations}</p>
-                    {job.product_analysis.facts_needing_user_confirmation.map(
-                      (fact, index) => (
-                        <p key={index}>• {fact}</p>
-                      ),
-                    )}
-                  </>
-                )}
-                <p className="job-reference">Generation {job.id}</p>
-              </div>
-            </div>
-          </section>
+          <CopyPanel
+            job={job}
+            content={content}
+            platform={resultFormat?.platform}
+            copied={copied}
+            onCopied={() => setCopied(true)}
+            onError={setError}
+          />
         )}
         <RecentJobs
           activeId={jobID}
