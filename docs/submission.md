@@ -70,11 +70,11 @@ Browser (Next.js) ──/api proxy──▶ FastAPI ──job id──▶ Celery
 
 ## Verification
 
-- 174 backend tests: real FFmpeg renders and decodes, every format's dimensions, upload rejection, URL protection, AI schema handling, job lifecycle, access control, and render quality rules (bold headline size, safe zones, hook card).
+- 182 backend tests: real FFmpeg renders and decodes, every format's dimensions, upload rejection, URL protection, AI schema handling, job lifecycle, access control, and render quality rules (bold headline size, safe zones, hook card).
 - 42 frontend tests, typecheck, and production build.
 - Live browser run (headless Chrome against live Ollama): 5 generation flows and 13 navigation, error, mobile, and network checks passed.
 - A 34 MB video uploaded through the UI is accepted.
 
 ## Not done (next steps)
 
-User accounts (results are currently tied to one browser, not a person), cloud deployment and a public URL, Docker images verified (prepared but not built here), object storage (retention is implemented; S3 is not), speech-to-text for video audio, and JavaScript-rendered product pages. The full list is in [implementation notes](implementation-notes.md#known-limitations-and-next-improvements).
+User accounts (results are currently tied to one browser, not a person), cloud deployment and a public URL, Docker images verified (prepared but not built here), object storage (retention is implemented; S3 is not), speech-to-text for video audio, and JavaScript-rendered product pages (JSON-LD in the server HTML is now read). The full list is in [implementation notes](implementation-notes.md#known-limitations-and-next-improvements).

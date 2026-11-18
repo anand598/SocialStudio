@@ -9,7 +9,13 @@ Fetching user-supplied URLs from a server is a classic SSRF vector, so every hop
   * follows redirects manually, re-validating each location;
   * streams bodies under a byte cap and an overall timeout.
 Page content is untrusted data: it is passed to the copywriter as data, never as instructions.
+
+Product details come from schema.org Product JSON-LD when the page has it (name, brand, description,
+gallery images), falling back to Open Graph / Twitter tags. Prices and offers are deliberately not
+passed on: they go stale and the copy must not make price claims.
 """
+import json
+import re
 import ipaddress
 import socket
 from collections.abc import Callable
@@ -23,6 +29,10 @@ from app.services.ai.provider import GenerationError
 from app.services.storage.local import decode_image, save_still
 
 MAX_HTML_BYTES = 2 * 1024 * 1024
+MAX_JSON_LD_BYTES = 512 * 1024
+MAX_IMAGE_ATTEMPTS = 3
+JSON_LD_BLOCK = re.compile(rb"<script\b[^>]*\btype\s*=\s*[\"']?application/ld\+json[\"']?[^>]*>(.*?)</script\s*>",
+                           re.IGNORECASE | re.DOTALL)
 USER_AGENT = "Mozilla/5.0 (compatible; SocialStudioPreview/1.0; product preview fetcher)"
 Resolver = Callable[[str, int], list[str]]
 
@@ -141,6 +151,9 @@ class ProductPageParser(HTMLParser):
         self.image_src = ""
         self.title = ""
         self._in_title = False
+        self.json_ld: list[str] = []
+        self._ld_size = 0
+        self._in_ld = False
 
     def handle_starttag(self, tag, attrs):
         values = {key.lower(): (value or "") for key, value in attrs}
@@ -152,14 +165,92 @@ class ProductPageParser(HTMLParser):
             self.image_src = values.get("href", "").strip()
         elif tag == "title":
             self._in_title = True
+        elif tag == "script" and values.get("type", "").strip().lower() == "application/ld+json":
+            self._in_ld = True
+            self.json_ld.append("")
 
     def handle_endtag(self, tag):
         if tag == "title":
             self._in_title = False
+        elif tag == "script":
+            self._in_ld = False
 
     def handle_data(self, data):
         if self._in_title and len(self.title) < 300:
             self.title += data
+        elif self._in_ld and self._ld_size + len(data) <= MAX_JSON_LD_BYTES:
+            self._ld_size += len(data)
+            self.json_ld[-1] += data
+
+
+class TextOnly(HTMLParser):
+    """Visible text of an HTML fragment (descriptions are often stored as HTML); scripts dropped."""
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self._skip = 0
+
+    def handle_starttag(self, tag, attrs):
+        self._skip += tag in ("script", "style")
+
+    def handle_endtag(self, tag):
+        self._skip -= tag in ("script", "style") and self._skip > 0
+
+    def handle_data(self, data):
+        if not self._skip:
+            self.parts.append(data)
+
+
+def strip_html(text: str) -> str:
+    parser = TextOnly()
+    parser.feed(text)
+    parser.close()
+    return " ".join(parser.parts)
+
+
+def is_product(node: dict) -> bool:
+    kinds = node.get("@type")
+    kinds = kinds if isinstance(kinds, list) else [kinds]
+    return any(kind in ("Product", "ProductGroup") for kind in kinds if isinstance(kind, str))
+
+
+def find_product(blocks: list[str]) -> dict:
+    """The first schema.org Product in the page's JSON-LD blocks (top level, lists, or @graph)."""
+    for block in blocks:
+        try:
+            data = json.loads(block)
+        except ValueError:
+            continue  # malformed blocks are common; ignore them
+        stack = [data]
+        while stack:
+            node = stack.pop(0)
+            if isinstance(node, list):
+                stack.extend(node[:50])
+            elif isinstance(node, dict):
+                if is_product(node):
+                    return node
+                if isinstance(node.get("@graph"), list):
+                    stack.extend(node["@graph"][:50])
+    return {}
+
+
+def text_of(value) -> str:
+    if isinstance(value, dict):
+        value = value.get("name", "")
+    if isinstance(value, list):
+        value = next((v for v in value if isinstance(v, str)), "")
+    return value if isinstance(value, str) else ""
+
+
+def images_of(value) -> list[str]:
+    values = value if isinstance(value, list) else [value]
+    urls = []
+    for item in values[:10]:
+        if isinstance(item, dict):
+            item = item.get("contentUrl") or item.get("url") or ""
+        if isinstance(item, str) and item.strip():
+            urls.append(item.strip())
+    return urls
 
 
 def clean(text: str, limit: int) -> str:
@@ -182,22 +273,50 @@ def ingest_url(source_url: str, directory: Path, *, resolver: Resolver = system_
         parser = ProductPageParser()
         parser.feed(page.body[:MAX_HTML_BYTES].decode("utf-8", errors="replace"))
         meta = parser.meta
+        product = find_product(parser.json_ld)
+        if not product and len(page.body) > MAX_HTML_BYTES:
+            # Large storefronts often put JSON-LD near the end: scan the rest cheaply, without parsing it.
+            late, size = [], 0
+            for match in JSON_LD_BLOCK.finditer(page.body):  # whole body: a block may straddle the cut
+                size += len(match.group(1))
+                if size > MAX_JSON_LD_BYTES:
+                    break
+                late.append(match.group(1).decode("utf-8", errors="replace"))
+            product = find_product(late)
         metadata.update(
-            title=clean(meta.get("og:title") or meta.get("twitter:title") or parser.title, 200),
-            description=clean(meta.get("og:description") or meta.get("twitter:description")
+            title=clean(text_of(product.get("name")) or meta.get("og:title") or meta.get("twitter:title")
+                        or parser.title, 200),
+            description=clean(strip_html(text_of(product.get("description")))
+                              or meta.get("og:description") or meta.get("twitter:description")
                               or meta.get("description", ""), 500),
-            site_name=clean(meta.get("og:site_name", ""), 80))
-        candidate = (meta.get("og:image:secure_url") or meta.get("og:image") or meta.get("og:image:url")
-                     or meta.get("twitter:image") or meta.get("twitter:image:src") or parser.image_src)
-        if not candidate:
+            site_name=clean(meta.get("og:site_name", ""), 80),
+            brand=clean(text_of(product.get("brand")), 80))
+        # The product's own photos first (Open Graph images are often share banners), then the tags.
+        candidates = [*images_of(product.get("image")),
+                      *(meta.get(key, "") for key in ("og:image:secure_url", "og:image", "og:image:url",
+                                                      "twitter:image", "twitter:image:src")), parser.image_src]
+        urls = list(dict.fromkeys(urljoin(page.url, c)[:2048] for c in candidates if c))
+        if not urls:
             raise GenerationError("URL_NO_IMAGE", "No product image was found on that page. "
                                   "Upload the product image instead.")
-        metadata["image_url"] = urljoin(page.url, candidate)[:2048]
-        try:
-            image = fetch(metadata["image_url"], "image/*", max_image, resolver=resolver, transport=transport)
-        except UrlRejected as exc:
-            raise GenerationError("URL_NO_IMAGE", "The page's product image is not on a public address. "
-                                  "Upload the product image instead.") from exc
+        image, canvas, transient = None, None, None
+        for url in urls[:MAX_IMAGE_ATTEMPTS]:
+            try:
+                candidate = fetch(url, "image/*", max_image, resolver=resolver, transport=transport)
+                canvas = decode_image(candidate.body)
+            except (UrlRejected, ValueError):
+                continue
+            except GenerationError as exc:
+                transient = exc if exc.transient else transient
+                continue
+            metadata["image_url"], image = url, candidate
+            break
+        if canvas is None:
+            if transient is not None:
+                raise transient  # e.g. a timeout: worth an automatic retry
+            raise GenerationError("URL_NO_IMAGE", "The product images on that page could not be downloaded or read. "
+                                  "Upload the product image instead.")
+        return save_still(canvas, directory), metadata
     else:
         raise GenerationError("URL_UNSUPPORTED", "That URL is not a product web page or image. "
                               "Use a product page link or upload the image instead.")

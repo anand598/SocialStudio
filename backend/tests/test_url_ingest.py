@@ -130,3 +130,106 @@ def test_url_job_rejects_private_target_at_submission(client, monkeypatch):
                                                         "input_type": "url", "source_url": "http://example.com/"})
     assert response.status_code == 422
     assert "public" in response.json()["detail"]
+
+
+# ---------- structured product data (JSON-LD) ----------
+
+def jpeg(colour="#3355aa"):
+    buffer = io.BytesIO()
+    Image.new("RGB", (400, 400), colour).save(buffer, "JPEG")
+    return buffer.getvalue()
+
+
+def ld_page(*blocks, head=b""):
+    scripts = b"".join(b'<script type="application/ld+json">' + block + b"</script>" for block in blocks)
+    return b"<html><head><title>Shop</title>" + head + scripts + b"</head><body></body></html>"
+
+
+HTML = {"content-type": "text/html; charset=utf-8"}
+IMG = {"content-type": "image/jpeg"}
+
+
+def test_product_json_ld_supplies_name_brand_description_and_image(tmp_path):
+    page = ld_page(
+        b'{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[]}',
+        b'{"@context":"https://schema.org","@graph":[{"@type":"Organization","name":"Acme Retail"},'
+        b'{"@type":["Product","Thing"],"name":"  Copper Desk Lamp ","brand":{"@type":"Brand","name":"Lumen"},'
+        b'"description":"<p>Hand-finished <b>copper</b> shade.</p>","image":["/img/lamp-1.jpg","/img/lamp-2.jpg"],'
+        b'"offers":{"@type":"Offer","price":"129.00","priceCurrency":"USD"}}]}',
+        head=b'<meta property="og:title" content="Share title"><meta property="og:image" content="/banner.jpg">')
+    seen = []
+    transport = site({"shop.example.com/p/lamp": (200, HTML, page),
+                      "shop.example.com/img/lamp-1.jpg": (200, IMG, jpeg()),
+                      "shop.example.com/banner.jpg": (200, IMG, jpeg("#000000"))}, seen)
+    still, metadata = ingest_url("https://shop.example.com/p/lamp", tmp_path, resolver=public, transport=transport)
+    assert metadata["title"] == "Copper Desk Lamp"
+    assert metadata["brand"] == "Lumen"
+    assert metadata["description"] == "Hand-finished copper shade."
+    assert metadata["image_url"] == "https://shop.example.com/img/lamp-1.jpg"   # product photo beats share banner
+    assert "price" not in str(metadata).lower() and "129" not in str(metadata)  # never pass prices to the copy
+    assert [r.url.path for r in seen] == ["/p/lamp", "/img/lamp-1.jpg"]
+
+
+def test_json_ld_image_is_used_when_there_is_no_open_graph_image(tmp_path):
+    page = ld_page(b'{"@type":"Product","name":"Kettle","image":{"@type":"ImageObject","contentUrl":"https://cdn.example.com/k.jpg"}}')
+    transport = site({"shop.example.com/k": (200, HTML, page), "cdn.example.com/k.jpg": (200, IMG, jpeg())})
+    _, metadata = ingest_url("https://shop.example.com/k", tmp_path, resolver=public, transport=transport)
+    assert metadata["image_url"] == "https://cdn.example.com/k.jpg" and metadata["title"] == "Kettle"
+
+
+def test_malformed_or_irrelevant_json_ld_falls_back_to_open_graph(tmp_path):
+    page = ld_page(b'{"@type":"Product", "name": ', b'{"@type":"WebSite","name":"Shop","image":"/logo.png"}',
+                   head=b'<meta property="og:title" content="Teapot"><meta property="og:image" content="/teapot.jpg">')
+    transport = site({"shop.example.com/t": (200, HTML, page), "shop.example.com/teapot.jpg": (200, IMG, jpeg())})
+    _, metadata = ingest_url("https://shop.example.com/t", tmp_path, resolver=public, transport=transport)
+    assert metadata["title"] == "Teapot" and metadata["image_url"].endswith("/teapot.jpg")
+    assert metadata.get("brand", "") == ""
+
+
+def test_a_broken_image_falls_through_to_the_next_candidate(tmp_path):
+    page = ld_page(b'{"@type":"Product","name":"Mug","image":["/gone.jpg","/broken.jpg","/mug.jpg","/never.jpg"]}')
+    seen = []
+    transport = site({"shop.example.com/m": (200, HTML, page),
+                      "shop.example.com/broken.jpg": (200, IMG, b"not an image"),
+                      "shop.example.com/mug.jpg": (200, IMG, jpeg())}, seen)
+    _, metadata = ingest_url("https://shop.example.com/m", tmp_path, resolver=public, transport=transport)
+    assert metadata["image_url"].endswith("/mug.jpg")
+    assert "/never.jpg" not in [r.url.path for r in seen]
+
+
+def test_image_attempts_are_bounded(tmp_path):
+    page = ld_page(b'{"@type":"Product","name":"Mug","image":["/a.jpg","/b.jpg","/c.jpg","/d.jpg"]}')
+    seen = []
+    transport = site({"shop.example.com/m": (200, HTML, page), "shop.example.com/d.jpg": (200, IMG, jpeg())}, seen)
+    with pytest.raises(GenerationError) as exc:
+        ingest_url("https://shop.example.com/m", tmp_path, resolver=public, transport=transport)
+    assert exc.value.code == "URL_NO_IMAGE"
+    assert len(seen) == 4   # the page plus at most three image attempts
+
+
+def test_long_descriptions_are_capped_and_scripts_ignored(tmp_path):
+    long = b"Great. " * 200
+    page = ld_page(b'{"@type":"Product","name":"Lamp","description":"' + long + b'<script>alert(1)<\\/script>","image":"/l.jpg"}')  # pages must escape </script> inside JSON-LD
+    transport = site({"shop.example.com/l": (200, HTML, page), "shop.example.com/l.jpg": (200, IMG, jpeg())})
+    _, metadata = ingest_url("https://shop.example.com/l", tmp_path, resolver=public, transport=transport)
+    assert len(metadata["description"]) <= 500 and "<" not in metadata["description"]
+    assert "alert" not in metadata["description"]
+
+
+def test_script_content_in_descriptions_is_dropped(tmp_path):
+    page = ld_page(b'{"@type":"Product","name":"Lamp","description":"Warm light.<script>alert(1)<\\/script> Brass base.",'
+                   b'"image":"/l.jpg"}')
+    transport = site({"shop.example.com/l": (200, HTML, page), "shop.example.com/l.jpg": (200, IMG, jpeg())})
+    _, metadata = ingest_url("https://shop.example.com/l", tmp_path, resolver=public, transport=transport)
+    assert metadata["description"] == "Warm light. Brass base."
+
+
+def test_json_ld_late_in_a_large_page_is_still_found(tmp_path):
+    # Big storefront pages often put their JSON-LD near the end, past the 2 MB parsed for meta tags.
+    padding = b"<div>" + b"x" * (2 * 1024 * 1024 + 1000) + b"</div>"
+    page = (b"<html><head><title>Shop</title></head><body>" + padding +
+            b'<script type="application/ld+json">{"@type":"Product","name":"Late Lamp","image":"/late.jpg"}</script>'
+            b"</body></html>")
+    transport = site({"shop.example.com/big": (200, HTML, page), "shop.example.com/late.jpg": (200, IMG, jpeg())})
+    _, metadata = ingest_url("https://shop.example.com/big", tmp_path, resolver=public, transport=transport)
+    assert metadata["title"] == "Late Lamp" and metadata["image_url"].endswith("/late.jpg")
