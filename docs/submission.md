@@ -5,7 +5,7 @@ Social Studio turns a product **image, video, or product-page link** into ready-
 | Deliverable | Where |
 | --- | --- |
 | Live application | **`<LIVE_URL>`** |
-| Demo video (2 min 35 s, captioned, silent) | **`<VIDEO_LINK>`** (`delivery/walkthrough.mp4`) |
+| Demo video (2 min 12 s, captioned, silent) | **`<VIDEO_LINK>`** (`delivery/walkthrough.mp4`) |
 | Source code | This repository. The first commits are large (scaffold, then inputs and formats together); from job history onward there is one commit per feature, each saying why and how it was verified |
 | README: setup, architecture, technology choices, assumptions, limitations | [README](../README.md), [architecture](architecture.md), [deployment](deployment.md) |
 | Implementation notes: real vs simulated, known issues, trade-offs, next steps | This page; the phase-by-phase log is in [implementation notes](implementation-notes.md) |
