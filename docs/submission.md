@@ -80,14 +80,14 @@ Celery beat: expire stuck jobs every minute · purge expired media every hour
 
 - **No lost or doubled work:** an atomic claim plus a per-attempt token means duplicate deliveries do nothing and a stale worker cannot overwrite a newer attempt. Outputs are written under attempt-specific names and published atomically only after validation.
 - **Guaranteed hand-off to the queue (transactional outbox):** a job and its queue message are saved in one transaction and published at once; if the broker is down, the job simply stays queued and a relay in the API publishes it when the broker returns, with backoff. Verified live: jobs created during a broker outage, and even across an API restart, were all delivered within seconds of the broker coming back. After one failed publish, requests stop waiting on the broker (about 6 s each) and answer in milliseconds.
-- **Bounded retries:** AI network/server errors are retried at most twice; invalid model output gets one repair attempt; validation errors are not retried.
-- **Stuck jobs:** jobs that stop updating expire after a timeout (scheduled task and on read) and can be retried by the user.
+- **Bounded retries:** AI network/server errors are retried automatically at most twice, through the outbox, so a retry survives a broker outage too; invalid model output gets one repair attempt; validation errors are not retried.
+- **Stuck jobs:** jobs that stop updating expire after a timeout (a sweep every minute, and on read for the jobs being read) and can be retried by the user.
 - **Safe errors:** users see stable codes and plain messages (for example `URL_BLOCKED` with a suggestion to upload instead); internals and stack traces never reach the client.
 - **Concurrency:** new versions are numbered per family under a unique index, with collisions retried; retention claims a job with a conditional update before deleting its files, so a retry or new version can never start from media being removed.
 
 ## Persistence
 
-PostgreSQL holds jobs, stages, results, and errors (SQLite only for the offline local demo). Media lives in per-job folders named by UUID. Eleven Alembic migrations, all run by the test suite on SQLite; migration 0009 was also run up and down on PostgreSQL during review. Media is deleted `MEDIA_RETENTION_DAYS` after a job finishes (default 30); the record and caption stay, media requests answer 410 Gone, and the UI shows an expired state. A sweep removes folders left by crashes.
+PostgreSQL holds jobs, stages, results, and errors (SQLite only for the offline local demo). Media lives in per-job folders named by UUID. Twelve Alembic migrations, all run by the test suite on SQLite; migration 0009 was also run up and down on PostgreSQL during review. Media is deleted `MEDIA_RETENTION_DAYS` after a job finishes (default 30); the record and caption stay, media requests answer 410 Gone, and the UI shows an expired state. A sweep removes folders left by crashes.
 
 ## Security
 
@@ -101,8 +101,8 @@ PostgreSQL holds jobs, stages, results, and errors (SQLite only for the offline 
 
 Built with AI coding assistants (Codex, then Claude Code), feature by feature, each change test-first, reviewed, and checked in a real browser. Later features were built by parallel agents against a fixed API contract and then reviewed by a separate agent that had not seen the implementation; those reviews found defects that were all fixed with regression tests and confirmed no data-loss or access-control issues.
 
-- **225 backend tests:** real FFmpeg renders and full decodes, every format's dimensions, upload and URL attacks, AI schema handling, job lifecycle and races, the outbox and its relay, rate limits and proxies, access control, retention, and rendering rules (headline size, safe zones).
-- **42 frontend tests**, typecheck, and production build. GitHub Actions runs the backend and frontend checks on every push, and the runs on `main` pass.
+- **238 backend tests:** real FFmpeg renders and full decodes, every format's dimensions, upload and URL attacks, AI schema handling, job lifecycle and races, the outbox and its relay, rate limits and proxies, access control, retention, and rendering rules (headline size, safe zones).
+- **43 frontend tests**, typecheck, and production build. GitHub Actions runs the backend and frontend checks on every push, and the runs on `main` pass.
 - **Live checks** in headless Chrome against live AI for every input type, new versions, retention, and privacy; product-URL extraction checked against real stores.
 
 ## Known issues and limitations

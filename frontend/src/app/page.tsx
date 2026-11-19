@@ -42,7 +42,8 @@ export default function Home() {
   const [error, setError] = useState("");
   // A create or retry request is in flight.
   const [submitting, setSubmitting] = useState(false);
-  const [copied, setCopied] = useState(false);
+  // The job whose caption was last copied, so the label never carries over to another job.
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   const { job, jobID, pollError, unavailable, open, reopen, isOpen } =
     useJobPolling();
   const busy =
@@ -102,7 +103,6 @@ export default function Home() {
     // Recent creatives), but don't pull them away from what they chose.
     if (!isOpen(from)) return;
     open(next);
-    setCopied(false);
     // A real history entry, so Back returns to the original.
     window.location.hash = `job=${next.id}`;
   }
@@ -199,8 +199,8 @@ export default function Home() {
             job={job}
             content={content}
             platform={resultFormat?.platform}
-            copied={copied}
-            onCopied={() => setCopied(true)}
+            copied={copiedId === job.id}
+            onCopied={() => setCopiedId(job.id)}
             onError={setError}
           />
         )}

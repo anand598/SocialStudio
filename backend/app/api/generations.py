@@ -24,7 +24,7 @@ from app.services import outbox
 from app.services.ingest.url import UrlRejected, check_url
 from app.services.storage.local import (check_logo_type, check_music_type, create_job_directory, job_directory,
                                         store_image, store_logo, store_music, store_video)
-from app.workers.tasks import expire_stale
+from app.workers.tasks import expire_stale, is_stale
 
 router = APIRouter(prefix="/api/v1")
 logger = logging.getLogger(__name__)
@@ -128,22 +128,29 @@ async def create_generation(
                                        "call_to_action": call_to_action.strip() or "Explore the collection",
                                        "brand_color": brand_color.upper() or None},
                         generation_mode=get_settings().generation_mode)
-    try:
-        session.add(job)
-        message = outbox.add(session, job_id)  # Same transaction: no job without its queue message.
-        session.commit()
-    except SQLAlchemyError as exc:
-        session.rollback()
-        shutil.rmtree(job_directory(job_id), ignore_errors=True)
-        logger.exception("Could not persist job %s", job_id)
-        raise HTTPException(503, "Storage is unavailable. Please try again shortly.") from exc
-    # After the commit the job will run, so its media must stay even if this read fails (503 via the
-    # global handler; the job then appears in the browser's history).
-    session.refresh(job)
+    # Blocking database calls run in a worker thread, never on the event loop.
+    message = await run_in_threadpool(persist, session, job)
     set_owner_cookie(response, token)  # Refreshes the expiry on every new job.
     # Off the event loop: an unreachable broker blocks until its connect timeout.
     await run_in_threadpool(outbox.publish_now, session, message)
     return job
+
+
+def persist(session: Session, job: GenerationJob) -> outbox.OutboxMessage:
+    """Save a new job together with its queue message, in one transaction."""
+    try:
+        session.add(job)
+        message = outbox.add(session, job.id)  # Same transaction: no job without its queue message.
+        session.commit()
+    except SQLAlchemyError as exc:
+        session.rollback()
+        shutil.rmtree(job_directory(job.id), ignore_errors=True)
+        logger.exception("Could not persist job %s", job.id)
+        raise HTTPException(503, "Storage is unavailable. Please try again shortly.") from exc
+    # After the commit the job will run, so its media must stay even if this read fails (503 via the
+    # global handler; the job then appears in the browser's history).
+    session.refresh(job)
+    return message
 
 
 EXPIRED = "This result has expired and its media was deleted. Create a new one."
@@ -155,12 +162,22 @@ def require_media(job: GenerationJob) -> None:
         raise HTTPException(410, EXPIRED)
 
 
+def expire_if_stale(session: Session, jobs) -> None:
+    """Report stuck jobs as failed the moment their owner looks, without a write on every poll: only
+    jobs being returned that have actually timed out are updated. The scheduler sweeps the rest."""
+    stale = [job for job in jobs if is_stale(job)]
+    if stale:
+        expire_stale(session, [job.id for job in stale])
+        for job in stale:
+            session.refresh(job)
+
+
 def find_job(job_id: UUID, session: Session, token: str | None) -> GenerationJob:
-    expire_stale(session)
     job = session.get(GenerationJob, job_id)
     # Missing, ownerless, and other people's jobs are indistinguishable to the caller.
     if not job or not job.owner_hash or not token or not hmac.compare_digest(job.owner_hash, owner_hash(token)):
         raise HTTPException(404, "Generation not found.")
+    expire_if_stale(session, [job])
     return job
 
 
@@ -173,10 +190,10 @@ def list_generations(limit: int = Query(20, ge=1, le=50), token: str | None = Ow
     """The calling browser's own jobs, newest first. No owner cookie means no history."""
     if not token:
         return {"items": []}
-    expire_stale(session)
-    jobs = session.scalars(select(GenerationJob).where(GenerationJob.owner_hash == owner_hash(token))
-                           .order_by(GenerationJob.created_at.desc()).limit(limit))
-    return {"items": list(jobs)}
+    jobs = list(session.scalars(select(GenerationJob).where(GenerationJob.owner_hash == owner_hash(token))
+                                .order_by(GenerationJob.created_at.desc()).limit(limit)))
+    expire_if_stale(session, jobs)
+    return {"items": jobs}
 
 
 @router.get("/generations/{job_id}", response_model=JobResponse)
@@ -193,7 +210,7 @@ def retry_generation(job_id: UUID, token: str | None = Owner, session: Session =
     # A conditional update prevents concurrent retries from publishing duplicate work.
     result = session.execute(update(GenerationJob).where(GenerationJob.id == job_id,
         GenerationJob.status == "failed", GenerationJob.purged_at.is_(None)).values(status="queued", stage="validating", progress=0,
-            error_code=None, error_message=None, completed_at=None, updated_at=datetime.now(timezone.utc)))
+            auto_retries=0, error_code=None, error_message=None, completed_at=None, updated_at=datetime.now(timezone.utc)))
     if not result.rowcount:
         session.rollback()
         raise HTTPException(409, "This generation has already been retried.")

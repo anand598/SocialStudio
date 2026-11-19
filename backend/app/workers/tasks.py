@@ -10,6 +10,7 @@ from app.services.ai.provider import GenerationError, get_provider
 from app.core.platforms import get_format
 from app.services.ingest.url import ingest_url
 from app.services.media.renderer import render_output
+from app.services import outbox
 from app.services.retention import purge_expired, purge_orphans
 from app.services.storage.local import job_directory
 from app.workers.celery_app import celery_app
@@ -29,6 +30,26 @@ def transition(job_id: UUID, run_token: UUID, **values) -> bool:
         return result.rowcount == 1
 
 
+# Automatic retries after a transient failure, waiting 5 s, then 10 s.
+MAX_AUTO_RETRIES = 2
+
+
+def requeue(job_id: UUID, run_token: UUID, retries: int) -> bool:
+    """Put a job this worker holds back in the queue for an automatic retry. The status change and its
+    delayed outbox message commit together, so the retry is published by the relay even if the broker
+    is down right now, and a superseded worker (its run token replaced) changes nothing."""
+    with SessionLocal() as session:
+        result = session.execute(update(GenerationJob).where(GenerationJob.id == job_id,
+            GenerationJob.status == "processing", GenerationJob.run_token == run_token).values(
+            status="queued", stage="retry_wait", progress=0, auto_retries=retries + 1, updated_at=now()))
+        if result.rowcount != 1:
+            session.rollback()
+            return False
+        outbox.add(session, job_id, delay=5 * (retries + 1))
+        session.commit()
+        return True
+
+
 STALE_MESSAGES = {
     # Never started: the broker or the worker was unavailable throughout (the outbox relay kept trying,
     # and stops once the job is no longer queued).
@@ -37,14 +58,33 @@ STALE_MESSAGES = {
 }
 
 
-def expire_stale(session) -> int:
-    cutoff = now() - timedelta(seconds=get_settings().stale_job_seconds)
+def stale_cutoff() -> datetime:
+    return now() - timedelta(seconds=get_settings().stale_job_seconds)
+
+
+def is_stale(job: GenerationJob, cutoff: datetime | None = None) -> bool:
+    """True if a loaded job is queued or running but has not been updated within the timeout."""
+    if job.status not in STALE_MESSAGES or job.updated_at is None:
+        return False
+    updated = job.updated_at if job.updated_at.tzinfo else job.updated_at.replace(tzinfo=timezone.utc)  # SQLite
+    return updated < (cutoff or stale_cutoff())
+
+
+def expire_stale(session, job_ids=None) -> int:
+    """Fail stuck jobs: all of them (the scheduled sweep), or only those in `job_ids`. The update is
+    conditional, so a job that moved on since it was read is left alone."""
+    cutoff = stale_cutoff()
     expired = 0
     for status, message in STALE_MESSAGES.items():
-        result = session.execute(update(GenerationJob).where(
-            GenerationJob.status == status, GenerationJob.updated_at < cutoff).values(
+        conditions = [GenerationJob.status == status, GenerationJob.updated_at < cutoff]
+        if job_ids is not None:
+            conditions.append(GenerationJob.id.in_(job_ids))
+        result = session.execute(update(GenerationJob).where(*conditions).values(
             status="failed", stage="failed", error_code="JOB_EXPIRED",
-            error_message=message, completed_at=now(), updated_at=now()))
+            error_message=message, completed_at=now(), updated_at=now())
+            # Callers refresh what they return; evaluating the WHERE in Python would compare SQLite's
+            # naive timestamps with an aware cutoff.
+            .execution_options(synchronize_session=False))
         expired += result.rowcount
     session.commit()
     return expired
@@ -62,8 +102,8 @@ def purge_expired_media():
         return {"jobs": purge_expired(session), "orphans": purge_orphans(session)}
 
 
-@celery_app.task(bind=True, name="social.generate", max_retries=2)
-def generate(self, job_id_string: str):
+@celery_app.task(name="social.generate")
+def generate(job_id_string: str):
     job_id = UUID(job_id_string)
     run_token = uuid4()
     with SessionLocal() as session:
@@ -118,9 +158,11 @@ def generate(self, job_id_string: str):
         logger.info("Generation completed job_id=%s mode=%s input=%s format=%s/%s", job_id, job.generation_mode,
                     job.input_type, job.platform, job.format)
     except GenerationError as exc:
-        if exc.transient and self.request.retries < self.max_retries:
-            transition(job_id, run_token, status="queued", stage="retry_wait", progress=0)
-            raise self.retry(exc=exc, countdown=5 * (self.request.retries + 1))
+        if exc.transient and job.auto_retries < MAX_AUTO_RETRIES:
+            if requeue(job_id, run_token, job.auto_retries):
+                logger.warning("Transient failure job_id=%s code=%s; automatic retry %s of %s queued", job_id,
+                               exc.code, job.auto_retries + 1, MAX_AUTO_RETRIES)
+            return
         transition(job_id, run_token, status="failed", stage="failed", error_code=exc.code,
                    error_message=exc.message, completed_at=now())
     except (Exception, SoftTimeLimitExceeded):

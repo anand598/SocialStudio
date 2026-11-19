@@ -1004,3 +1004,34 @@ describe("expired results", () => {
     expect(screen.queryByText(/Kept for/)).toBeNull();
   });
 });
+
+it("resets the Copied label when another job opens", async () => {
+  window.history.replaceState(null, "", `#job=${id}`);
+  const other = "55555555-5555-4555-8555-555555555555";
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const url = String(input);
+    if (url.endsWith("/config/platforms"))
+      return new Response(JSON.stringify(config), { status: 200 });
+    if (url.includes("/generations?"))
+      return new Response(JSON.stringify({ items: [] }), { status: 200 });
+    return new Response(
+      JSON.stringify({ ...job, id: url.includes(other) ? other : id }),
+      { status: 200 },
+    );
+  });
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: vi.fn().mockResolvedValue(undefined) },
+  });
+  render(<Home />);
+  fireEvent.click(await screen.findByRole("button", { name: "Copy caption" }));
+  expect(
+    await screen.findByRole("button", { name: "Copied ✓" }),
+  ).toBeInTheDocument();
+  window.location.hash = `job=${other}`;
+  window.dispatchEvent(new HashChangeEvent("hashchange"));
+  await screen.findByText(`Generation ${other}`, {}, { timeout: 4000 });
+  expect(
+    screen.getByRole("button", { name: "Copy caption" }),
+  ).toBeInTheDocument();
+});

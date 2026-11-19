@@ -54,6 +54,8 @@ class GenerationJob(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Automatic retries used after transient failures in the current run (reset by a manual retry).
+    auto_retries: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     # Set when retention deleted the job's media; the row and generated text are kept.
     purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

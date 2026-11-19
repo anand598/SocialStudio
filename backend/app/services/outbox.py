@@ -1,6 +1,6 @@
 """Transactional outbox: guaranteed delivery of generation jobs from the database to the Celery queue.
 
-Every job change that needs a worker (create, retry, new version) inserts an OutboxMessage in the same
+Every job change that needs a worker (create, retry, new version, automatic retry) inserts an OutboxMessage in the same
 transaction, so a committed job always has its queue message and a rolled-back one never does. Right
 after commit the API publishes the message itself (the fast path), so the normal case stays instant.
 Anything left unsent (the broker was down, or the process died between commit and publish) is published
@@ -58,11 +58,12 @@ def backoff(attempts: int) -> int:
     return min(2 ** attempts, get_settings().outbox_max_backoff_seconds)
 
 
-def add(session: Session, job_id: UUID, task: str = GENERATE) -> OutboxMessage:
+def add(session: Session, job_id: UUID, task: str = GENERATE, delay: float | None = None) -> OutboxMessage:
     """Stage a message in the caller's transaction. It starts leased to the caller, who publishes it
-    with publish_now after commit; the relay only steps in if that has not happened when the lease ends."""
+    with publish_now after commit; the relay only steps in if that has not happened when the lease ends.
+    With a delay (an automatic retry), nobody publishes it now: the relay does once the delay has passed."""
     message = OutboxMessage(job_id=job_id, task=task, attempts=0,
-                            next_attempt_at=utcnow() + timedelta(seconds=LEASE_SECONDS))
+                            next_attempt_at=utcnow() + timedelta(seconds=LEASE_SECONDS if delay is None else delay))
     session.add(message)
     return message
 
